@@ -73,19 +73,19 @@ class StreamingSTT:
                 except json.JSONDecodeError:
                     continue
 
-                if result.get("type") != "transcript":
-                    continue
-
+                msg_type = result.get("type", "")
                 text = result.get("text", "").strip()
                 if not text:
                     continue
 
-                is_final = result.get("is_final", False)
-
-                if not is_final:
+                if msg_type == "partial":
                     await self._handle_partial(text)
-                else:
-                    await self._handle_final(text)
+                elif msg_type == "transcript":
+                    is_final = result.get("is_final", True)
+                    if not is_final:
+                        await self._handle_partial(text)
+                    else:
+                        await self._handle_final(text)
 
         except asyncio.CancelledError:
             pass
