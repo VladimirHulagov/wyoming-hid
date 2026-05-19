@@ -1,0 +1,11 @@
+# Wyoming HID configuration
+url: wss://your-stt-server.example.com/stt
+user: your_username
+password: your_password
+method: xdotool    # xdotool | ydotool
+ping_interval: 30
+
+# Voice activation
+wake_phrase: "голосовой ввод"   # say this to start dictation
+stop_phrase: "стоп ввод"        # say this to stop dictation (or set "" to disable)
+idle_timeout: 15                 # auto-deactivate after N seconds of silence

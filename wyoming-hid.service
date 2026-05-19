@@ -1,0 +1,15 @@
+[Unit]
+Description=Wyoming HID - STT to virtual keyboard
+Documentation=https://stt.collaborationism.tech
+After=pulseaudio.service sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/wyoming-hid/wyoming-hid.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
