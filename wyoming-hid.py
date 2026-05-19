@@ -17,6 +17,9 @@ import pyaudio
 import websockets
 import yaml
 
+from overlay import GTKOverlay
+from streaming import State, StreamingSTT
+
 try:
     ctypes.cdll.LoadLibrary("libasound.so.2").snd_lib_error_set_handler(None)
 except Exception:
@@ -35,9 +38,9 @@ TARGET_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
 NATIVE_CHUNK = 4410
-SEND_CHUNK = 2560
-BUFFER_CHUNKS = 32    # ~2.56s rolling buffer for wake detection overlap
-MIN_CHUNKS = 10       # minimum chunks to send (~0.8s)
+SEND_CHUNK_MS = 100
+SEND_SAMPLES = TARGET_RATE * SEND_CHUNK_MS // 1000
+SEND_BYTES = SEND_SAMPLES * SAMPLE_WIDTH
 
 
 def load_config(config_path: Path) -> dict:
@@ -73,181 +76,158 @@ def type_text(text: str, method: str = "xdotool"):
         log.error("Typing failed: %s", e)
 
 
-def normalize(text: str) -> str:
-    return text.lower().replace("ё", "е").strip()
-
-
-async def stt_session(
+async def run_streaming(
     ws_url: str,
     auth_header: str,
     typing_method: str,
     wake_phrase: str,
     stop_phrase: str,
     idle_timeout: float,
+    use_overlay: bool,
+    overlay_opacity: float,
+    overlay_font_size: int,
 ):
-    extra_headers = {"Proxy-Authorization": auth_header} if auth_header else {}
-    wake_norm = normalize(wake_phrase)
-    stop_norm = normalize(stop_phrase) if stop_phrase else None
-
-    async with websockets.connect(
-        ws_url,
-        extra_headers=extra_headers,
-        ping_interval=None,
-        max_size=None,
-        compression=None,
-    ) as ws:
-        log.info("Connected")
-
-        pa = pyaudio.PyAudio()
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=CHANNELS,
-            rate=NATIVE_RATE,
-            input=True,
-            frames_per_buffer=NATIVE_CHUNK,
-        )
-        log.info("Mic: %dHz → %dHz", NATIVE_RATE, TARGET_RATE)
-
-        loop = asyncio.get_event_loop()
-        audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=60)
-        mic_stop = threading.Event()
-
-        def mic_reader():
-            resample_state = None
-            try:
-                while not mic_stop.is_set():
-                    raw = stream.read(NATIVE_CHUNK, exception_on_overflow=False)
-                    resampled, resample_state = audioop.ratecv(
-                        raw, SAMPLE_WIDTH, CHANNELS,
-                        NATIVE_RATE, TARGET_RATE, resample_state,
-                    )
-                    if not audio_queue.full():
-                        loop.call_soon_threadsafe(audio_queue.put_nowait, resampled)
-            except Exception as e:
-                log.error("mic_reader: %s", e)
-
-        mic_thread = threading.Thread(target=mic_reader, daemon=True)
-        mic_thread.start()
-
-        dictation_active = False
-        idle_counter = 0
-        max_idle = max(1, int(idle_timeout / 2.5))
-        has_typed = False
-
-        rolling_buffer = []
-        sent_up_to = 0
-
-        log.info("Wake: '%s' | Stop: '%s'", wake_phrase, stop_phrase or "-")
-
+    overlay = None
+    if use_overlay:
         try:
-            while True:
-                await asyncio.sleep(1.0)
+            overlay = GTKOverlay(opacity=overlay_opacity, font_size=overlay_font_size)
+            overlay.start()
+            log.info("Overlay started")
+        except Exception as e:
+            log.warning("Overlay failed, falling back to console: %s", e)
+            overlay = None
 
-                while not audio_queue.empty():
+    def on_partial(text: str):
+        if overlay:
+            if text:
+                overlay.update(text)
+                overlay.show(text)
+            else:
+                overlay.hide()
+
+    def on_final(text: str):
+        type_text(text, typing_method)
+
+    def on_state_change(old: State, new: State):
+        if overlay:
+            if new == State.IDLE:
+                overlay.hide()
+            elif new == State.LISTENING:
+                overlay.show("🎤 ...")
+
+    extra_headers = {"Proxy-Authorization": auth_header} if auth_header else {}
+
+    backoff = 1
+    max_backoff = 30
+
+    while True:
+        try:
+            async with websockets.connect(
+                ws_url,
+                extra_headers=extra_headers,
+                ping_interval=None,
+                max_size=None,
+                compression=None,
+            ) as ws:
+                log.info("Connected to %s", ws_url)
+                backoff = 1
+
+                pa = pyaudio.PyAudio()
+                stream = pa.open(
+                    format=pyaudio.paInt16,
+                    channels=CHANNELS,
+                    rate=NATIVE_RATE,
+                    input=True,
+                    frames_per_buffer=NATIVE_CHUNK,
+                )
+                log.info("Mic: %dHz -> %dHz", NATIVE_RATE, TARGET_RATE)
+
+                stt = StreamingSTT(
+                    ws,
+                    wake_phrase=wake_phrase,
+                    stop_phrase=stop_phrase,
+                    on_partial=on_partial,
+                    on_final=on_final,
+                    on_state_change=on_state_change,
+                )
+
+                await stt.start_session()
+
+                loop = asyncio.get_event_loop()
+                audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=120)
+                mic_stop = threading.Event()
+
+                resample_state = None
+                audio_buffer = bytearray()
+
+                def mic_reader():
+                    nonlocal resample_state
                     try:
-                        rolling_buffer.append(audio_queue.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
+                        while not mic_stop.is_set():
+                            raw = stream.read(NATIVE_CHUNK, exception_on_overflow=False)
+                            resampled, resample_state = audioop.ratecv(
+                                raw, SAMPLE_WIDTH, CHANNELS,
+                                NATIVE_RATE, TARGET_RATE, resample_state,
+                            )
+                            if not audio_queue.full():
+                                loop.call_soon_threadsafe(
+                                    audio_queue.put_nowait, resampled
+                                )
+                    except Exception as e:
+                        log.error("mic_reader: %s", e)
 
-                if len(rolling_buffer) > BUFFER_CHUNKS * 2:
-                    excess = len(rolling_buffer) - BUFFER_CHUNKS
-                    rolling_buffer = rolling_buffer[excess:]
-                    sent_up_to = max(0, sent_up_to - excess)
+                mic_thread = threading.Thread(target=mic_reader, daemon=True)
+                mic_thread.start()
 
-                if not dictation_active:
-                    send_chunks = rolling_buffer[-BUFFER_CHUNKS:]
-                else:
-                    send_chunks = rolling_buffer[sent_up_to:]
-                    sent_up_to = len(rolling_buffer)
+                result_task = asyncio.create_task(stt.result_reader(
+                    idle_timeout_chunks=max(1, int(idle_timeout / 2))
+                ))
 
-                if len(send_chunks) < MIN_CHUNKS:
-                    if dictation_active:
-                        idle_counter += 1
-                        if idle_counter >= max_idle:
-                            dictation_active = False
-                            idle_counter = 0
-                            rolling_buffer = []
-                            sent_up_to = 0
-                            log.info("Deactivated: idle")
-                    continue
-
-                await ws.send(json.dumps({"type": "start"}))
-                for chunk in send_chunks:
-                    await ws.send(chunk)
-                await ws.send(json.dumps({"type": "stop"}))
-
-                transcripts = []
                 try:
                     while True:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=1.5)
-                        try:
-                            result = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if result.get("type") == "transcript" and result.get("text", "").strip():
-                            transcripts.append(result["text"].strip())
-                except asyncio.TimeoutError:
+                        chunk = await audio_queue.get()
+                        audio_buffer.extend(chunk)
+                        while len(audio_buffer) >= SEND_BYTES:
+                            send_data = bytes(audio_buffer[:SEND_BYTES])
+                            audio_buffer = audio_buffer[SEND_BYTES:]
+                            await stt.send_audio(send_data)
+                except websockets.ConnectionClosed:
+                    log.warning("Disconnected")
+                except asyncio.CancelledError:
                     pass
+                finally:
+                    result_task.cancel()
+                    try:
+                        await result_task
+                    except asyncio.CancelledError:
+                        pass
+                    stream.stop_stream()
+                    stream.close()
+                    mic_stop.set()
+                    pa.terminate()
+                    if overlay:
+                        overlay.hide()
 
-                if not transcripts:
-                    if dictation_active:
-                        idle_counter += 1
-                        if idle_counter >= max_idle:
-                            dictation_active = False
-                            idle_counter = 0
-                            rolling_buffer = []
-                            sent_up_to = 0
-                            log.info("Deactivated: idle")
-                    continue
-
-                full_text = " ".join(transcripts)
-                norm = normalize(full_text)
-
-                if not dictation_active:
-                    if wake_norm in norm:
-                        dictation_active = True
-                        idle_counter = 0
-                        has_typed = False
-                        sent_up_to = len(rolling_buffer)
-                        log.info("Activated: '%s'", full_text)
-                    else:
-                        log.debug("Ignored: '%s'", full_text)
-                else:
-                    idle_counter = 0
-                    if stop_norm and stop_norm in norm:
-                        dictation_active = False
-                        idle_counter = 0
-                        rolling_buffer = []
-                        sent_up_to = 0
-                        log.info("Deactivated: '%s'", full_text)
-                    else:
-                        text = full_text
-                        if has_typed:
-                            text = " " + text
-                        type_text(text, typing_method)
-                        has_typed = True
-                        sent_up_to = len(rolling_buffer)
-
-        except websockets.ConnectionClosed:
-            log.warning("Disconnected")
+        except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
+            log.warning("Connection error: %s, retrying in %ds", e, backoff)
+            if overlay:
+                overlay.show(f"⚠ Reconnecting ({backoff}s)...")
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
         except KeyboardInterrupt:
-            pass
-        finally:
-            log.info("Stopping...")
-            stream.stop_stream()
-            stream.close()
-            mic_stop.set()
-            pa.terminate()
-            log.info("Done.")
+            if overlay:
+                overlay.hide()
+            break
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Wyoming HID - STT to keyboard")
+    parser = argparse.ArgumentParser(description="Wyoming HID - Streaming STT to keyboard")
     parser.add_argument("-c", "--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--url")
     parser.add_argument("--user")
     parser.add_argument("--password")
     parser.add_argument("--method", choices=["xdotool", "ydotool"])
+    parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -263,20 +243,26 @@ def main():
     wake_phrase = cfg.get("wake_phrase", "голосовой ввод")
     stop_phrase = cfg.get("stop_phrase", "стоп ввод")
     idle_timeout = float(cfg.get("idle_timeout", 15))
+    use_overlay = not args.no_overlay and cfg.get("overlay", True)
+    overlay_opacity = float(cfg.get("overlay_opacity", 0.85))
+    overlay_font_size = int(cfg.get("overlay_font_size", 18))
 
     if user and password:
         auth = f"Basic {base64.b64encode(f'{user}:{password}'.encode()).decode()}"
     else:
         auth = ""
 
-    log.info("URL: %s | Method: %s", ws_url, typing_method)
+    log.info("URL: %s | Method: %s | Overlay: %s", ws_url, typing_method, use_overlay)
 
     try:
-        asyncio.run(stt_session(
+        asyncio.run(run_streaming(
             ws_url, auth, typing_method,
             wake_phrase=wake_phrase,
             stop_phrase=stop_phrase,
             idle_timeout=idle_timeout,
+            use_overlay=use_overlay,
+            overlay_opacity=overlay_opacity,
+            overlay_font_size=overlay_font_size,
         ))
     except KeyboardInterrupt:
         pass
