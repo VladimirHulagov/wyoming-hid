@@ -3,9 +3,13 @@ url: wss://your-stt-server.example.com/stt
 user: your_username
 password: your_password
 method: xdotool    # xdotool | ydotool
-ping_interval: 30
 
 # Voice activation
 wake_phrase: "голосовой ввод"   # say this to start dictation
 stop_phrase: "стоп ввод"        # say this to stop dictation (or set "" to disable)
 idle_timeout: 15                 # auto-deactivate after N seconds of silence
+
+# Overlay settings
+overlay: true                    # show GTK3 overlay for partial results
+overlay_opacity: 0.85            # background opacity (0.0 - 1.0)
+overlay_font_size: 18            # text size in pixels
