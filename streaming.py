@@ -35,6 +35,8 @@ class StreamingSTT:
         self._idle_counter = 0
         self._has_typed = False
         self._running = True
+        self._recent_partials = []
+        self._max_partials = 5
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -95,11 +97,17 @@ class StreamingSTT:
     async def _handle_partial(self, text: str):
         norm = self._normalize(text)
 
+        self._recent_partials.append(norm)
+        if len(self._recent_partials) > self._max_partials:
+            self._recent_partials.pop(0)
+        combined = " ".join(self._recent_partials)
+
         if self.state == State.IDLE:
-            if self.wake_norm in norm:
+            if self.wake_norm in norm or self.wake_norm in combined:
                 self._set_state(State.LISTENING)
                 self._idle_counter = 0
                 self._has_typed = False
+                self._recent_partials.clear()
                 log.info("Wake detected: '%s'", text)
                 if self._on_partial:
                     self._on_partial("🎤 " + text)
@@ -107,20 +115,23 @@ class StreamingSTT:
                 log.debug("Ignored partial: '%s'", text)
 
         elif self.state == State.LISTENING:
-            if self.stop_norm and self.stop_norm in norm:
+            if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
                 self._set_state(State.IDLE)
                 self._idle_counter = 0
+                self._recent_partials.clear()
                 return
             self._set_state(State.DICTATING)
             self._idle_counter = 0
+            self._recent_partials.clear()
             if self._on_partial:
                 self._on_partial(text)
 
         elif self.state == State.DICTATING:
             self._idle_counter = 0
-            if self.stop_norm and self.stop_norm in norm:
+            if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
                 self._set_state(State.IDLE)
                 self._idle_counter = 0
+                self._recent_partials.clear()
                 if self._on_partial:
                     self._on_partial("")
                 return

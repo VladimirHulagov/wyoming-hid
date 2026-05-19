@@ -185,7 +185,10 @@ async def run_streaming(
 
                 try:
                     while True:
-                        chunk = await audio_queue.get()
+                        try:
+                            chunk = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            continue
                         audio_buffer.extend(chunk)
                         while len(audio_buffer) >= SEND_BYTES:
                             send_data = bytes(audio_buffer[:SEND_BYTES])
