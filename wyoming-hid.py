@@ -7,10 +7,14 @@ import base64
 import ctypes
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+
+os.environ.setdefault("ALSA_PCM_PLUGINS", "")
+os.environ.setdefault("JACK_NO_START_SERVER", "1")
 
 import audioop
 import pyaudio
@@ -119,8 +123,17 @@ async def run_streaming(
 
     backoff = 1
     max_backoff = 30
+    shutting_down = False
 
-    while True:
+    def _signal_handler(sig, frame):
+        nonlocal shutting_down
+        shutting_down = True
+        log.info("Shutting down...")
+
+    import signal
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    while not shutting_down:
         try:
             async with websockets.connect(
                 ws_url,
@@ -184,7 +197,7 @@ async def run_streaming(
                 ))
 
                 try:
-                    while True:
+                    while not shutting_down:
                         try:
                             chunk = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
                         except asyncio.TimeoutError:
@@ -212,15 +225,15 @@ async def run_streaming(
                         overlay.hide()
 
         except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
+            if shutting_down:
+                break
             log.warning("Connection error: %s, retrying in %ds", e, backoff)
             if overlay:
                 overlay.show(f"⚠ Reconnecting ({backoff}s)...")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, max_backoff)
         except KeyboardInterrupt:
-            if overlay:
-                overlay.hide()
-            break
+            shutting_down = True
 
 
 def main():
