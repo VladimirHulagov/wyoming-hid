@@ -58,6 +58,7 @@ class StreamingSTT:
 
     async def result_reader(self, idle_timeout_chunks: int = 6):
         max_idle = max(1, idle_timeout_chunks)
+        self._last_partial_text = ""
         try:
             while self._running:
                 try:
@@ -66,7 +67,10 @@ class StreamingSTT:
                     if self.state == State.DICTATING:
                         self._idle_counter += 1
                         if self._idle_counter >= max_idle:
-                            self._set_state(State.IDLE)
+                            if self._last_partial_text:
+                                await self._finalize_utterance()
+                            else:
+                                self._set_state(State.IDLE)
                             self._idle_counter = 0
                     continue
 
@@ -108,9 +112,9 @@ class StreamingSTT:
                 self._idle_counter = 0
                 self._has_typed = False
                 self._recent_partials.clear()
-                log.info("Wake detected: '%s'", text)
+                log.info("Wake detected: '%s' (combined: '%s')", text, combined)
                 if self._on_partial:
-                    self._on_partial("🎤 " + text)
+                    self._on_partial("🎤 ...")
             else:
                 log.debug("Ignored partial: '%s'", text)
 
@@ -123,20 +127,52 @@ class StreamingSTT:
             self._set_state(State.DICTATING)
             self._idle_counter = 0
             self._recent_partials.clear()
+            self._last_partial_text = text
             if self._on_partial:
                 self._on_partial(text)
 
         elif self.state == State.DICTATING:
             self._idle_counter = 0
             if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
+                await self._finalize_utterance()
                 self._set_state(State.IDLE)
-                self._idle_counter = 0
-                self._recent_partials.clear()
-                if self._on_partial:
-                    self._on_partial("")
                 return
+            self._last_partial_text = text
             if self._on_partial:
                 self._on_partial(text)
+
+    async def _finalize_utterance(self):
+        if not self._last_partial_text:
+            return
+        text = self._last_partial_text
+        self._last_partial_text = ""
+
+        typed_text = text
+        if self._has_typed:
+            typed_text = " " + typed_text
+        if self._on_final:
+            self._on_final(typed_text)
+        self._has_typed = True
+
+        if self._on_partial:
+            self._on_partial("")
+
+        log.info("Finalized (from partial): '%s'", text)
+        await self.ws.send(json.dumps({"type": "stop"}))
+
+        try:
+            while True:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=1.5)
+                try:
+                    result = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if result.get("type") == "transcript":
+                    break
+        except asyncio.TimeoutError:
+            pass
+
+        await self.ws.send(json.dumps({"type": "start"}))
 
     async def _handle_final(self, text: str):
         norm = self._normalize(text)
