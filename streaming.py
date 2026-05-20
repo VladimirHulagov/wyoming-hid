@@ -4,6 +4,7 @@
 import asyncio
 import json
 import logging
+import time
 from enum import Enum, auto
 
 log = logging.getLogger("wyoming-hid")
@@ -37,6 +38,7 @@ class StreamingSTT:
         self._running = True
         self._recent_partials = []
         self._max_partials = 5
+        self._grace_until = 0
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -111,6 +113,7 @@ class StreamingSTT:
                 self._idle_counter = 0
                 self._has_typed = False
                 self._recent_partials.clear()
+                self._grace_until = time.monotonic() + 2.0
                 log.info("Wake detected: '%s' (combined: '%s')", text, combined)
                 if self._on_partial:
                     self._on_partial("🎤 ...")
@@ -131,6 +134,9 @@ class StreamingSTT:
                 self._on_partial(text)
 
         elif self.state == State.DICTATING:
+            if time.monotonic() < self._grace_until:
+                log.debug("Grace period, skipping: '%s'", text)
+                return
             self._idle_counter = 0
             if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
                 await self._finalize_utterance()
