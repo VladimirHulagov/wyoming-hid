@@ -157,21 +157,6 @@ class StreamingSTT:
             self._on_partial("")
 
         log.info("Finalized (from partial): '%s'", text)
-        await self.ws.send(json.dumps({"type": "stop"}))
-
-        try:
-            while True:
-                raw = await asyncio.wait_for(self.ws.recv(), timeout=1.5)
-                try:
-                    result = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if result.get("type") == "transcript":
-                    break
-        except asyncio.TimeoutError:
-            pass
-
-        await self.ws.send(json.dumps({"type": "start"}))
 
     async def _handle_final(self, text: str):
         norm = self._normalize(text)
