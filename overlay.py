@@ -53,16 +53,9 @@ class GTKOverlay:
             font-size: {self._font_size}px;
             font-weight: bold;
         }}
-        window {{
-            background-color: rgba(30, 30, 30, {self._opacity});
-            border-radius: 12px;
-        }}
         """
         css_provider.load_from_data(css.encode())
         self._label.get_style_context().add_provider(
-            css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-        )
-        self._window.get_style_context().add_provider(
             css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
         )
 
@@ -87,10 +80,9 @@ class GTKOverlay:
         Gtk.main()
 
     def _on_draw(self, widget, cr):
-        cr.set_source_rgba(0, 0, 0, 0)
-        cr.set_operator(getattr(cr, "OPERATOR_SOURCE", 0))
+        cr.set_source_rgba(30 / 255, 30 / 255, 30 / 255, self._opacity)
+        cr.set_operator(0)
         cr.paint()
-        cr.set_operator(getattr(cr, "OPERATOR_OVER", 0))
         return False
 
     def _on_screen_changed(self, widget, old_screen):

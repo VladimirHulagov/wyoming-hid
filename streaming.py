@@ -57,16 +57,15 @@ class StreamingSTT:
         await self.ws.send(json.dumps({"type": "start"}))
 
     async def result_reader(self, idle_timeout_chunks: int = 6):
-        max_idle = max(1, idle_timeout_chunks)
-        self._last_partial_text = ""
+        finalize_chunks = max(1, 2)
         try:
             while self._running:
                 try:
-                    raw = await asyncio.wait_for(self.ws.recv(), timeout=2.0)
+                    raw = await asyncio.wait_for(self.ws.recv(), timeout=1.5)
                 except asyncio.TimeoutError:
                     if self.state == State.DICTATING:
                         self._idle_counter += 1
-                        if self._idle_counter >= max_idle:
+                        if self._idle_counter >= finalize_chunks:
                             if self._last_partial_text:
                                 await self._finalize_utterance()
                             else:
