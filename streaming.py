@@ -41,6 +41,7 @@ class StreamingSTT:
         self._last_partial_text = ""
         self._last_partial_norm = ""
         self._dictated_texts = set()
+        self._wake_time = 0
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -65,7 +66,7 @@ class StreamingSTT:
         await self.ws.send(json.dumps({"type": "start"}))
 
     async def result_reader(self, idle_timeout_chunks: int = 6):
-        finalize_chunks = max(1, 2)
+        finalize_chunks = 1
         try:
             while self._running:
                 try:
@@ -74,9 +75,10 @@ class StreamingSTT:
                     if self.state == State.DICTATING:
                         self._idle_counter += 1
                         if self._idle_counter >= finalize_chunks:
-                            if self._last_partial_text:
+                            in_grace = time.monotonic() - self._wake_time < 3.0
+                            if self._last_partial_text and not in_grace:
                                 await self._finalize_utterance()
-                            else:
+                            elif not self._last_partial_text:
                                 self._set_state(State.IDLE)
                                 self._dictated_texts.clear()
                             self._idle_counter = 0
@@ -123,6 +125,7 @@ class StreamingSTT:
                 self._last_partial_norm = ""
                 self._dictated_texts.clear()
                 self._recent_partials.clear()
+                self._wake_time = time.monotonic()
                 log.info("Wake detected: '%s' (combined: '%s')", text, combined)
                 if self._on_partial:
                     self._on_partial("🎤 ...")
@@ -143,6 +146,12 @@ class StreamingSTT:
                 self._set_state(State.IDLE)
                 self._dictated_texts.clear()
                 self._recent_partials.clear()
+                return
+
+            in_grace = time.monotonic() - self._wake_time < 3.0
+            if in_grace:
+                if self._on_partial:
+                    self._on_partial("🎤 " + text)
                 return
 
             if self._is_wake_remnant(text):
