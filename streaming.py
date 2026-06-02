@@ -65,7 +65,13 @@ class StreamingSTT:
                 try:
                     raw = await asyncio.wait_for(self.ws.recv(), timeout=1.5)
                 except asyncio.TimeoutError:
-                    if self.state == State.DICTATING:
+                    if self.state == State.LISTENING:
+                        self._set_state(State.DICTATING)
+                        self._idle_counter = 0
+                        self._recent_partials.clear()
+                        self._last_partial_text = ""
+                        log.info("Wake-word flushed, ready for dictation")
+                    elif self.state == State.DICTATING:
                         self._idle_counter += 1
                         if self._idle_counter >= finalize_chunks:
                             if self._last_partial_text:
@@ -121,22 +127,14 @@ class StreamingSTT:
                 log.debug("Ignored partial: '%s'", text)
 
         elif self.state == State.LISTENING:
+            self._idle_counter = 0
             if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
                 self._set_state(State.IDLE)
-                self._idle_counter = 0
                 self._recent_partials.clear()
                 return
-            self._set_state(State.DICTATING)
-            self._idle_counter = 0
-            self._recent_partials.clear()
-            self._last_partial_text = text
-            if self._on_partial:
-                self._on_partial(text)
+            return
 
         elif self.state == State.DICTATING:
-            if time.monotonic() < self._grace_until:
-                log.debug("Grace period, skipping: '%s'", text)
-                return
             self._idle_counter = 0
             if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
                 await self._finalize_utterance()

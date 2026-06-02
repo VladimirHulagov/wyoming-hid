@@ -29,6 +29,16 @@ try:
 except Exception:
     pass
 
+_devnull = open(os.devnull, "w")
+_old_stderr = os.dup(2)
+os.dup2(_devnull.fileno(), 2)
+
+import pyaudio
+
+os.dup2(_old_stderr, 2)
+os.close(_old_stderr)
+_devnull.close()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -145,6 +155,9 @@ async def run_streaming(
                 log.info("Connected to %s", ws_url)
                 backoff = 1
 
+                _dn = open(os.devnull, "w")
+                _oe = os.dup(2)
+                os.dup2(_dn.fileno(), 2)
                 pa = pyaudio.PyAudio()
                 stream = pa.open(
                     format=pyaudio.paInt16,
@@ -153,6 +166,9 @@ async def run_streaming(
                     input=True,
                     frames_per_buffer=NATIVE_CHUNK,
                 )
+                os.dup2(_oe, 2)
+                os.close(_oe)
+                _dn.close()
                 log.info("Mic: %dHz -> %dHz", NATIVE_RATE, TARGET_RATE)
 
                 stt = StreamingSTT(
