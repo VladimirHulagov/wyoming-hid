@@ -122,11 +122,11 @@ async def run_streaming(
     def on_final(text: str):
         type_text(text, typing_method)
 
-    def on_state_change(old: State, new: State):
+    def on_state_change(old: State, new_state: State):
         if overlay:
-            if new == State.IDLE:
+            if new_state == State.IDLE:
                 overlay.hide()
-            elif new == State.LISTENING:
+            elif new_state == State.DICTATING:
                 overlay.show("🎤 ...")
 
     extra_headers = {"Proxy-Authorization": auth_header} if auth_header else {}

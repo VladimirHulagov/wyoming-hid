@@ -12,7 +12,6 @@ log = logging.getLogger("wyoming-hid")
 
 class State(Enum):
     IDLE = auto()
-    LISTENING = auto()
     DICTATING = auto()
 
 
@@ -28,6 +27,7 @@ class StreamingSTT:
     ):
         self.ws = ws
         self.wake_norm = self._normalize(wake_phrase)
+        self.wake_words = set(self.wake_norm.split())
         self.stop_norm = self._normalize(stop_phrase) if stop_phrase else None
         self.state = State.IDLE
         self._on_partial = on_partial
@@ -38,11 +38,17 @@ class StreamingSTT:
         self._running = True
         self._recent_partials = []
         self._max_partials = 5
-        self._grace_until = 0
+        self._last_partial_text = ""
+        self._last_partial_norm = ""
+        self._dictated_texts = set()
 
     @staticmethod
     def _normalize(text: str) -> str:
         return text.lower().replace("ё", "е").strip()
+
+    def _is_wake_remnant(self, text: str) -> bool:
+        words = set(text.split())
+        return bool(words & self.wake_words) or self.wake_norm in text
 
     def _set_state(self, new_state: State):
         if self.state != new_state:
@@ -65,19 +71,14 @@ class StreamingSTT:
                 try:
                     raw = await asyncio.wait_for(self.ws.recv(), timeout=1.5)
                 except asyncio.TimeoutError:
-                    if self.state == State.LISTENING:
-                        self._set_state(State.DICTATING)
-                        self._idle_counter = 0
-                        self._recent_partials.clear()
-                        self._last_partial_text = ""
-                        log.info("Wake-word flushed, ready for dictation")
-                    elif self.state == State.DICTATING:
+                    if self.state == State.DICTATING:
                         self._idle_counter += 1
                         if self._idle_counter >= finalize_chunks:
                             if self._last_partial_text:
                                 await self._finalize_utterance()
                             else:
                                 self._set_state(State.IDLE)
+                                self._dictated_texts.clear()
                             self._idle_counter = 0
                     continue
 
@@ -115,40 +116,60 @@ class StreamingSTT:
 
         if self.state == State.IDLE:
             if self.wake_norm in norm or self.wake_norm in combined:
-                self._set_state(State.LISTENING)
+                self._set_state(State.DICTATING)
                 self._idle_counter = 0
                 self._has_typed = False
+                self._last_partial_text = ""
+                self._last_partial_norm = ""
+                self._dictated_texts.clear()
                 self._recent_partials.clear()
-                self._grace_until = time.monotonic() + 2.0
                 log.info("Wake detected: '%s' (combined: '%s')", text, combined)
                 if self._on_partial:
                     self._on_partial("🎤 ...")
+                return
             else:
                 log.debug("Ignored partial: '%s'", text)
+                return
 
-        elif self.state == State.LISTENING:
+        if self.state == State.DICTATING:
+            if norm == self._last_partial_norm:
+                return
+
             self._idle_counter = 0
+
             if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
+                if self._last_partial_text and not self._is_wake_remnant(self._last_partial_text):
+                    await self._finalize_utterance()
                 self._set_state(State.IDLE)
+                self._dictated_texts.clear()
                 self._recent_partials.clear()
                 return
-            return
 
-        elif self.state == State.DICTATING:
-            self._idle_counter = 0
-            if self.stop_norm and (self.stop_norm in norm or self.stop_norm in combined):
-                await self._finalize_utterance()
-                self._set_state(State.IDLE)
+            if self._is_wake_remnant(text):
+                log.debug("Skipping wake remnant: '%s'", text)
                 return
+
+            if norm in self._dictated_texts:
+                log.debug("Skipping already typed: '%s'", text)
+                return
+
             self._last_partial_text = text
+            self._last_partial_norm = norm
+
             if self._on_partial:
                 self._on_partial(text)
 
     async def _finalize_utterance(self):
         if not self._last_partial_text:
             return
+        if self._is_wake_remnant(self._last_partial_text):
+            self._last_partial_text = ""
+            return
+
         text = self._last_partial_text
+        self._dictated_texts.add(self._last_partial_norm)
         self._last_partial_text = ""
+        self._last_partial_norm = ""
 
         typed_text = text
         if self._has_typed:
@@ -160,33 +181,35 @@ class StreamingSTT:
         if self._on_partial:
             self._on_partial("")
 
-        log.info("Finalized (from partial): '%s'", text)
+        log.info("Finalized: '%s'", text)
 
     async def _handle_final(self, text: str):
         norm = self._normalize(text)
 
         if self.state == State.IDLE:
             if self.wake_norm in norm:
-                self._set_state(State.LISTENING)
+                self._set_state(State.DICTATING)
                 self._idle_counter = 0
                 self._has_typed = False
+                self._dictated_texts.clear()
             return
-
-        if self.state == State.LISTENING:
-            if self.stop_norm and self.stop_norm in norm:
-                self._set_state(State.IDLE)
-                self._idle_counter = 0
-                return
-            self._set_state(State.DICTATING)
 
         if self.state == State.DICTATING:
             self._idle_counter = 0
+
             if self.stop_norm and self.stop_norm in norm:
                 self._set_state(State.IDLE)
-                self._idle_counter = 0
-                if self._on_partial:
-                    self._on_partial("")
+                self._dictated_texts.clear()
+                self._recent_partials.clear()
                 return
+
+            if self._is_wake_remnant(text):
+                return
+
+            if norm in self._dictated_texts:
+                return
+
+            self._dictated_texts.add(norm)
 
             typed_text = text
             if self._has_typed:
@@ -198,6 +221,7 @@ class StreamingSTT:
             if self._on_partial:
                 self._on_partial("")
 
+            log.info("Final (from server): '%s'", text)
             await self.ws.send(json.dumps({"type": "start"}))
 
     def stop(self):
