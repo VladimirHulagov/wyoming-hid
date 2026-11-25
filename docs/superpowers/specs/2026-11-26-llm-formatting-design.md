@@ -56,9 +56,9 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   cooldown_after=3, cooldown_seconds=60.0, clock=time.monotonic)`:
   - `submit(raw) -> seq` - synchronous, never blocks: stores the raw text, assigns `seq`,
     creates the task and makes sure the consumer task is running;
-  - the consumer awaits tasks strictly in `seq` order and calls `await on_text(text)` sequentially
-    (`on_text` is an async callable); the context for the next requests is the last
-    `context_utterances` emitted texts;
+  - the consumer awaits tasks strictly in `seq` order and calls `on_text(text)` sequentially
+    (`on_text` is a plain callable invoked in a worker thread); the context for the next
+    requests is the last `context_utterances` emitted texts;
   - `_process` - cooldown check, request under the semaphore with `asyncio.wait_for(timeout)`,
     validation (`looks_faithful`); returns the formatted text or the raw text; only request
     errors and timeouts count towards the cooldown;
@@ -76,6 +76,8 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
 ### Wiring
 
 - `load_config`: new optional section `llm` (defaults below).
+- `build_formatter(llm_cfg, on_text)`: returns an `OrderedFormatter`, or `None` when the section
+  is missing, disabled, or no API key can be resolved (a warning is logged, raw text is typed).
 - `run_streaming(..., llm_cfg)`:
   - the formatter is created once, after the overlay, outside the reconnect loop;
   - `on_final` -> `formatter.submit(raw)`;
