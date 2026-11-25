@@ -45,6 +45,9 @@ class TestTextHelpers(unittest.TestCase):
             looks_faithful("скажи ему чтобы перезвонил мне на 8 950", "Скажи ему, чтобы перезвонил мне.")
         )
 
+    def test_unfaithful_one_word_preamble(self):
+        self.assertFalse(looks_faithful("привет как дела", "Отлично, привет, как дела?"))
+
     def test_faithful_digits_kept(self):
         self.assertTrue(
             looks_faithful(

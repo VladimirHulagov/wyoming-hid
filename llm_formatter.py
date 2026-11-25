@@ -71,7 +71,7 @@ def looks_faithful(raw: str, out: str) -> bool:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
-    return len(extra) <= max(1, len(long_out) // EXTRA_DIVISOR)
+    return len(extra) <= len(long_out) // EXTRA_DIVISOR
 
 
 def ends_sentence(text: str) -> bool:
