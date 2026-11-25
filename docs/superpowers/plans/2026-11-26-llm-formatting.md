@@ -154,7 +154,7 @@ class TestTextHelpers(unittest.TestCase):
         self.assertFalse(looks_faithful("про про про про про", "Проверка."))
 
     def test_faithful_glued_words_with_short_pieces(self):
-        self.assertTrue(looks_faithful("даянеснял или не снял", "Да, я не снял или не снял."))
+        self.assertTrue(looks_faithful("даяснял или не снял", "Да, я снял или не снял."))
 
     def test_faithful_only_fillers(self):
         self.assertTrue(looks_faithful("ну вот а да", ""))
