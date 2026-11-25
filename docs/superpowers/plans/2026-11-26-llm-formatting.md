@@ -80,15 +80,64 @@ class TestTextHelpers(unittest.TestCase):
             )
         )
 
+    def test_unfaithful_preamble_on_long_output(self):
+        self.assertFalse(
+            looks_faithful(
+                "скажи ему чтобы он зашёл ко мне в кабинет завтра утром и взял с собой все документы которые лежат на столе",
+                "Конечно! Отлично! Скажи ему, чтобы он зашёл ко мне в кабинет завтра утром и взял с собой все документы, которые лежат на столе.",
+            )
+        )
+
     def test_unfaithful_dropped_negation(self):
         self.assertFalse(
             looks_faithful("не забудь отправить письмо", "Забудь отправить письмо.")
+        )
+
+    def test_unfaithful_dropped_negation_long(self):
+        self.assertFalse(
+            looks_faithful(
+                "пожалуйста не забудь отправить ему письмо завтра утром до совещания",
+                "Пожалуйста, забудь отправить ему письмо завтра утром до совещания.",
+            )
+        )
+
+    def test_unfaithful_dropped_ni(self):
+        self.assertFalse(
+            looks_faithful(
+                "пожалуйста я ни в коем случае не пойду туда завтра утром",
+                "Пожалуйста, я в коем случае не пойду туда завтра утром.",
+            )
+        )
+
+    def test_unfaithful_added_negation(self):
+        self.assertFalse(
+            looks_faithful("забудь отправить письмо", "Не забудь отправить письмо.")
+        )
+
+    def test_unfaithful_dropped_negation_prefix(self):
+        self.assertFalse(
+            looks_faithful("неважно отправить письмо сейчас", "Важно отправить письмо сейчас.")
         )
 
     def test_unfaithful_dropped_digits(self):
         self.assertFalse(
             looks_faithful("скажи ему чтобы перезвонил мне на 8 950", "Скажи ему, чтобы перезвонил мне.")
         )
+
+    def test_unfaithful_changed_digits(self):
+        self.assertFalse(looks_faithful("код 2023", "Код 2024."))
+
+    def test_unfaithful_coverage_below_threshold(self):
+        self.assertFalse(
+            looks_faithful(
+                "отправь письмо василию завтра утром в девять часов",
+                "Отправь письмо Василию завтра утром в девять.",
+            )
+        )
+
+    def test_unfaithful_control_characters(self):
+        self.assertFalse(looks_faithful("привет мир", "Привет\nмир."))
+        self.assertFalse(looks_faithful("привет мир", "Привет\tмир."))
 
     def test_unfaithful_one_word_preamble(self):
         self.assertFalse(looks_faithful("привет как дела", "Отлично, привет, как дела?"))
@@ -109,6 +158,7 @@ class TestTextHelpers(unittest.TestCase):
 
     def test_faithful_only_fillers(self):
         self.assertTrue(looks_faithful("ну вот а да", ""))
+        self.assertTrue(looks_faithful("угу", "Ну вот."))
         self.assertFalse(looks_faithful("угу", "Привет"))
 
     def test_ends_sentence(self):
@@ -116,6 +166,7 @@ class TestTextHelpers(unittest.TestCase):
         self.assertTrue(ends_sentence("Как дела?"))
         self.assertTrue(ends_sentence("Так..."))
         self.assertTrue(ends_sentence("Он сказал: «Привет»."))
+        self.assertTrue(ends_sentence("(Да.)"))
         self.assertFalse(ends_sentence("Привет"))
         self.assertFalse(ends_sentence("Он сказал: «Привет»"))
 
@@ -156,6 +207,7 @@ from __future__ import annotations
 
 import re
 import string
+import unicodedata
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -191,9 +243,21 @@ def _content_words(text: str) -> list[str]:
     return [token for token in _tokens(text) if token not in FILLERS]
 
 
+def _has_digits(text: str) -> bool:
+    return any(ch.isdigit() for ch in text)
+
+
+def _is_negation(token: str) -> bool:
+    return token in MUST_KEEP or (len(token) >= 5 and token.startswith(("не", "ни")))
+
+
 def _match(word: str, token: str) -> bool:
     if word == token:
         return True
+    if _has_digits(word) or _has_digits(token):
+        return False
+    if _is_negation(word) != _is_negation(token):
+        return False
     if len(word) >= MIN_TOKEN_LEN and len(token) >= MIN_TOKEN_LEN:
         if word in token or token in word:
             return True
@@ -205,11 +269,17 @@ def _match(word: str, token: str) -> bool:
 def looks_faithful(raw: str, out: str) -> bool:
     if len(out) > MAX_OUTPUT_FACTOR * len(raw) + MAX_OUTPUT_EXTRA:
         return False
+    if any(unicodedata.category(ch) == "Cc" for ch in out):
+        return False
     raw_words = _content_words(raw)
     if not raw_words:
         return not _content_words(out)
     out_tokens = _tokens(out)
     if any(word in raw_words and word not in out_tokens for word in MUST_KEEP):
+        return False
+    if sum(1 for token in out_tokens if _is_negation(token)) > sum(
+        1 for word in raw_words if _is_negation(word)
+    ):
         return False
     matched, used = 0, set()
     for word in raw_words:
@@ -222,7 +292,7 @@ def looks_faithful(raw: str, out: str) -> bool:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
-    return len(extra) <= len(long_out) // EXTRA_DIVISOR
+    return len(extra) <= min(len(long_out) // EXTRA_DIVISOR, 1)
 
 
 def ends_sentence(text: str) -> bool:
@@ -255,7 +325,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `20 passed`
+Expected: `28 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -354,7 +424,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `22 passed`
+Expected: `30 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -488,7 +558,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `26 passed`
+Expected: `34 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -695,7 +765,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `31 passed`
+Expected: `39 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -997,7 +1067,13 @@ class OrderedFormatter:
         api = self._clock() - t_start
         total = self._clock() - t_submit
         text = text.strip()
-        if not text or not await asyncio.to_thread(looks_faithful, raw, text):
+        faithful = False
+        if text:
+            try:
+                faithful = await asyncio.to_thread(looks_faithful, raw, text)
+            except Exception:
+                log.exception("llm: seq=%d validation failed", seq)
+        if not faithful:
             log.info(
                 "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs rejected, typing raw",
                 seq, waited, api, total,
@@ -1074,7 +1150,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `40 passed`
+Expected: `48 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1791,7 +1867,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `49 passed`
+Expected: `57 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -1994,7 +2070,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `49 passed`
+Expected: `57 passed`
 
 Run:
 ```bash

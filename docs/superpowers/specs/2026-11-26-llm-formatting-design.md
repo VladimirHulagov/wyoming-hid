@@ -35,20 +35,26 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
 
 - `SYSTEM_PROMPT`, `build_messages(raw, context)` - system prompt is a constant Russian text;
   the user message contains up to N formatted context lines and the raw utterance.
-- `looks_faithful(raw, out) -> bool` - a guard against invented or dropped content:
-  - tokens are runs of Cyrillic/Latin letters and digits in the lowercased text (ё -> е); fillers are not
-    counted as content words: ну, вот, а, да, угу, ага, это, то, и, же, там, тут;
-  - every content word of `raw` is matched to a content word of `out` by exact match, by substring
-    (both >= 3 chars) or by `SequenceMatcher` ratio >= 0.6 (both >= 4 chars); each output token is used
-    at most once; at least 90 % of the content words of `raw` must match (ASR error corrections such as
-    "попоавит" -> "поправит" pass);
-  - the negations `не` and `ни` must be present in `out` whenever they are in `raw`;
-  - `len(out) <= 2.5 * len(raw) + 20`;
-  - long content tokens of `out` (>= 3 chars) that no content word of `raw` explains must be at most
-    `count // 7` of the long content tokens of `out`: a model preamble such as
-    "Конечно! Вот отформатированный текст:" is rejected, while split glued words pass;
-  - when `raw` has no content words, `out` must have no content words either;
-  - the check runs in a worker thread (`asyncio.to_thread`), it is quadratic in the worst case.
+- `looks_faithful(raw, out) -> bool` - a guard against invented or dropped content. It rejects the
+  output (`False`) when any of the following holds:
+  - `len(out) > 2.5 * len(raw) + 20`;
+  - `out` contains a control character (newline, tab and the like: `xdotool type` would turn them
+    into key presses);
+  - tokens are runs of Cyrillic/Latin letters and digits in the lowercased text (ё -> е); fillers are
+    not counted as content words: ну, вот, а, да, угу, ага, это, то, и, же, там, тут. When `raw` has no
+    content words, `out` must have no content words either;
+  - a negation of `raw` is missing or an extra negation is added. Negations are the standalone tokens
+    `не` and `ни` and tokens of 5 or more characters starting with `не`/`ни`: every standalone negation
+    of `raw` must be present in `out`, and `out` must not contain more negations than `raw`;
+  - fewer than 90 % of the content words of `raw` are matched to tokens of `out`. A raw content word
+    matches an output token by exact match, by substring (both >= 3 chars) or by `SequenceMatcher`
+    ratio >= 0.6 (both >= 4 chars); each output token is used at most once; tokens containing digits
+    only match exactly; a negated token never matches a non-negated one (so `важно` does not match
+    `неважно`). ASR error corrections such as "попоавит" -> "поправит" pass;
+  - more than `min(count // 7, 1)` long content tokens of `out` (>= 3 characters, not fillers) are
+    explained by no content word of `raw`: a model preamble such as "Конечно! Вот отформатированный
+    текст:" is rejected, while split glued words pass (at most one unexplained word is tolerated);
+- the check runs in a worker thread (`asyncio.to_thread`); an exception in it counts as a rejection.
 - `separator(prev, new)` - `""` when `prev` is None or `new` starts with punctuation, else `" "`.
 - `ends_sentence(text)` - last non-closer character is one of `. ! ? …`.
 - `LLMClient(base_url, api_key, model, timeout)`:
