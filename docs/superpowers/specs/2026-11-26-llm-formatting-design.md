@@ -45,8 +45,8 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   - the negations `не` and `ни` must be present in `out` whenever they are in `raw`;
   - `len(out) <= 2.5 * len(raw) + 20`;
   - long content tokens of `out` (>= 3 chars) that no content word of `raw` explains must be at most
-    `max(1, count // 7)`: a model preamble such as "Конечно! Вот отформатированный текст:" is rejected,
-    while split glued words pass;
+    `count // 7` of the long content tokens of `out`: a model preamble such as
+    "Конечно! Вот отформатированный текст:" is rejected, while split glued words pass;
   - when `raw` has no content words, `out` must have no content words either;
   - the check runs in a worker thread (`asyncio.to_thread`), it is quadratic in the worst case.
 - `separator(prev, new)` - `""` when `prev` is None or `new` starts with punctuation, else `" "`.

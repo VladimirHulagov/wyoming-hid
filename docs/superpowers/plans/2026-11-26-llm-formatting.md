@@ -90,6 +90,9 @@ class TestTextHelpers(unittest.TestCase):
             looks_faithful("скажи ему чтобы перезвонил мне на 8 950", "Скажи ему, чтобы перезвонил мне.")
         )
 
+    def test_unfaithful_one_word_preamble(self):
+        self.assertFalse(looks_faithful("привет как дела", "Отлично, привет, как дела?"))
+
     def test_faithful_digits_kept(self):
         self.assertTrue(
             looks_faithful(
@@ -219,7 +222,7 @@ def looks_faithful(raw: str, out: str) -> bool:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
-    return len(extra) <= max(1, len(long_out) // EXTRA_DIVISOR)
+    return len(extra) <= len(long_out) // EXTRA_DIVISOR
 
 
 def ends_sentence(text: str) -> bool:
@@ -252,7 +255,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `18 passed`
+Expected: `20 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -351,7 +354,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `20 passed`
+Expected: `22 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -485,7 +488,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `24 passed`
+Expected: `26 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -692,7 +695,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `29 passed`
+Expected: `31 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1071,7 +1074,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `38 passed`
+Expected: `40 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1788,7 +1791,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `47 passed`
+Expected: `49 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -1991,7 +1994,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `47 passed`
+Expected: `49 passed`
 
 Run:
 ```bash
