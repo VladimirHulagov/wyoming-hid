@@ -24,8 +24,40 @@ class TestTextHelpers(unittest.TestCase):
         )
 
     def test_unfaithful_too_long(self):
-        out = "Угу. Хорошо, хорошо, ничего страшного." * 3
-        self.assertFalse(looks_faithful("угу", out))
+        out = "Привет, привет, привет. " * 3
+        self.assertFalse(looks_faithful("привет привет привет", out))
+
+    def test_unfaithful_invented_words(self):
+        self.assertFalse(
+            looks_faithful(
+                "скажи ему чтобы он зашёл ко мне в кабинет завтра утром",
+                "Конечно! Вот отформатированный текст: Скажи ему, чтобы он зашёл ко мне в кабинет завтра утром.",
+            )
+        )
+
+    def test_unfaithful_dropped_negation(self):
+        self.assertFalse(
+            looks_faithful("не забудь отправить письмо", "Забудь отправить письмо.")
+        )
+
+    def test_unfaithful_dropped_digits(self):
+        self.assertFalse(
+            looks_faithful("скажи ему чтобы перезвонил мне на 8 950", "Скажи ему, чтобы перезвонил мне.")
+        )
+
+    def test_faithful_digits_kept(self):
+        self.assertTrue(
+            looks_faithful(
+                "скажи ему чтобы перезвонил мне на 8 950",
+                "Скажи ему, чтобы перезвонил мне на 8 950.",
+            )
+        )
+
+    def test_unfaithful_repeated_word(self):
+        self.assertFalse(looks_faithful("про про про про про", "Проверка."))
+
+    def test_faithful_glued_words_with_short_pieces(self):
+        self.assertTrue(looks_faithful("даянеснял или не снял", "Да, я не снял или не снял."))
 
     def test_faithful_only_fillers(self):
         self.assertTrue(looks_faithful("ну вот а да", ""))

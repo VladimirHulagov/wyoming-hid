@@ -17,17 +17,19 @@ COOLDOWN_AFTER = 3
 COOLDOWN_SECONDS = 60.0
 
 FILLERS = frozenset("ну вот а да угу ага это то и же там тут".split())
+MUST_KEEP = frozenset(("не", "ни"))
 MIN_TOKEN_LEN = 3
 FUZZY_MIN_LEN = 4
 FUZZY_RATIO = 0.6
-FAITHFUL_RATIO = 0.7
+FAITHFUL_RATIO = 0.9
+EXTRA_DIVISOR = 7
 MAX_OUTPUT_FACTOR = 2.5
 MAX_OUTPUT_EXTRA = 20
 SENTENCE_FINAL = ".!?…"
 CLOSERS = "\"'»)]}❞“”„"
 LEAD_PUNCT = frozenset(string.punctuation)
 
-_TOKEN_RE = re.compile(r"[а-яёa-z]+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
 
 def _tokens(text: str) -> list[str]:
@@ -56,8 +58,20 @@ def looks_faithful(raw: str, out: str) -> bool:
     if not raw_words:
         return not _content_words(out)
     out_tokens = _tokens(out)
-    matched = sum(1 for word in raw_words if any(_match(word, token) for token in out_tokens))
-    return matched / len(raw_words) >= FAITHFUL_RATIO
+    if any(word in raw_words and word not in out_tokens for word in MUST_KEEP):
+        return False
+    matched, used = 0, set()
+    for word in raw_words:
+        for index, token in enumerate(out_tokens):
+            if index not in used and _match(word, token):
+                matched += 1
+                used.add(index)
+                break
+    if matched / len(raw_words) < FAITHFUL_RATIO:
+        return False
+    long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
+    extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
+    return len(extra) <= max(1, len(long_out) // EXTRA_DIVISOR)
 
 
 def ends_sentence(text: str) -> bool:
