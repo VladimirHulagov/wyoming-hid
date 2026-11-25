@@ -69,8 +69,40 @@ class TestTextHelpers(unittest.TestCase):
         )
 
     def test_unfaithful_too_long(self):
-        out = "Угу. Хорошо, хорошо, ничего страшного." * 3
-        self.assertFalse(looks_faithful("угу", out))
+        out = "Привет, привет, привет. " * 3
+        self.assertFalse(looks_faithful("привет привет привет", out))
+
+    def test_unfaithful_invented_words(self):
+        self.assertFalse(
+            looks_faithful(
+                "скажи ему чтобы он зашёл ко мне в кабинет завтра утром",
+                "Конечно! Вот отформатированный текст: Скажи ему, чтобы он зашёл ко мне в кабинет завтра утром.",
+            )
+        )
+
+    def test_unfaithful_dropped_negation(self):
+        self.assertFalse(
+            looks_faithful("не забудь отправить письмо", "Забудь отправить письмо.")
+        )
+
+    def test_unfaithful_dropped_digits(self):
+        self.assertFalse(
+            looks_faithful("скажи ему чтобы перезвонил мне на 8 950", "Скажи ему, чтобы перезвонил мне.")
+        )
+
+    def test_faithful_digits_kept(self):
+        self.assertTrue(
+            looks_faithful(
+                "скажи ему чтобы перезвонил мне на 8 950",
+                "Скажи ему, чтобы перезвонил мне на 8 950.",
+            )
+        )
+
+    def test_unfaithful_repeated_word(self):
+        self.assertFalse(looks_faithful("про про про про про", "Проверка."))
+
+    def test_faithful_glued_words_with_short_pieces(self):
+        self.assertTrue(looks_faithful("даянеснял или не снял", "Да, я не снял или не снял."))
 
     def test_faithful_only_fillers(self):
         self.assertTrue(looks_faithful("ну вот а да", ""))
@@ -133,17 +165,19 @@ COOLDOWN_AFTER = 3
 COOLDOWN_SECONDS = 60.0
 
 FILLERS = frozenset("ну вот а да угу ага это то и же там тут".split())
+MUST_KEEP = frozenset(("не", "ни"))
 MIN_TOKEN_LEN = 3
 FUZZY_MIN_LEN = 4
 FUZZY_RATIO = 0.6
-FAITHFUL_RATIO = 0.7
+FAITHFUL_RATIO = 0.9
+EXTRA_DIVISOR = 7
 MAX_OUTPUT_FACTOR = 2.5
 MAX_OUTPUT_EXTRA = 20
 SENTENCE_FINAL = ".!?…"
 CLOSERS = "\"'»)]}❞“”„"
 LEAD_PUNCT = frozenset(string.punctuation)
 
-_TOKEN_RE = re.compile(r"[а-яёa-z]+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
 
 def _tokens(text: str) -> list[str]:
@@ -172,8 +206,20 @@ def looks_faithful(raw: str, out: str) -> bool:
     if not raw_words:
         return not _content_words(out)
     out_tokens = _tokens(out)
-    matched = sum(1 for word in raw_words if any(_match(word, token) for token in out_tokens))
-    return matched / len(raw_words) >= FAITHFUL_RATIO
+    if any(word in raw_words and word not in out_tokens for word in MUST_KEEP):
+        return False
+    matched, used = 0, set()
+    for word in raw_words:
+        for index, token in enumerate(out_tokens):
+            if index not in used and _match(word, token):
+                matched += 1
+                used.add(index)
+                break
+    if matched / len(raw_words) < FAITHFUL_RATIO:
+        return False
+    long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
+    extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
+    return len(extra) <= max(1, len(long_out) // EXTRA_DIVISOR)
 
 
 def ends_sentence(text: str) -> bool:
@@ -206,7 +252,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `13 passed`
+Expected: `18 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -305,7 +351,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `15 passed`
+Expected: `20 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -439,7 +485,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `19 passed`
+Expected: `24 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -646,7 +692,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `24 passed`
+Expected: `29 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -948,7 +994,7 @@ class OrderedFormatter:
         api = self._clock() - t_start
         total = self._clock() - t_submit
         text = text.strip()
-        if not text or not looks_faithful(raw, text):
+        if not text or not await asyncio.to_thread(looks_faithful, raw, text):
             log.info(
                 "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs rejected, typing raw",
                 seq, waited, api, total,
@@ -1025,7 +1071,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `33 passed`
+Expected: `38 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1742,7 +1788,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `42 passed`
+Expected: `47 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -1945,7 +1991,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `42 passed`
+Expected: `47 passed`
 
 Run:
 ```bash

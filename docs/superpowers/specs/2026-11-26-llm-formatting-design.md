@@ -36,13 +36,19 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
 - `SYSTEM_PROMPT`, `build_messages(raw, context)` - system prompt is a constant Russian text;
   the user message contains up to N formatted context lines and the raw utterance.
 - `looks_faithful(raw, out) -> bool` - a guard against invented or dropped content:
-  - tokens are runs of Cyrillic/Latin letters in the lowercased text (ё -> е); fillers are not
+  - tokens are runs of Cyrillic/Latin letters and digits in the lowercased text (ё -> е); fillers are not
     counted as content words: ну, вот, а, да, угу, ага, это, то, и, же, там, тут;
-  - a content word of `raw` is matched in `out` by exact match, by substring (both >= 3 chars) or by
-    `SequenceMatcher` ratio >= 0.6 (both >= 4 chars);
-  - at least 70 % must match (ASR error corrections such as "попоавит" -> "поправит" pass);
+  - every content word of `raw` is matched to a content word of `out` by exact match, by substring
+    (both >= 3 chars) or by `SequenceMatcher` ratio >= 0.6 (both >= 4 chars); each output token is used
+    at most once; at least 90 % of the content words of `raw` must match (ASR error corrections such as
+    "попоавит" -> "поправит" pass);
+  - the negations `не` and `ни` must be present in `out` whenever they are in `raw`;
   - `len(out) <= 2.5 * len(raw) + 20`;
-  - when `raw` has no content words, `out` must have no content words either.
+  - long content tokens of `out` (>= 3 chars) that no content word of `raw` explains must be at most
+    `max(1, count // 7)`: a model preamble such as "Конечно! Вот отформатированный текст:" is rejected,
+    while split glued words pass;
+  - when `raw` has no content words, `out` must have no content words either;
+  - the check runs in a worker thread (`asyncio.to_thread`), it is quadratic in the worst case.
 - `separator(prev, new)` - `""` when `prev` is None or `new` starts with punctuation, else `" "`.
 - `ends_sentence(text)` - last non-closer character is one of `. ! ? …`.
 - `LLMClient(base_url, api_key, model, timeout)`:
