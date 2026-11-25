@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import string
+import unicodedata
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -40,9 +41,21 @@ def _content_words(text: str) -> list[str]:
     return [token for token in _tokens(text) if token not in FILLERS]
 
 
+def _has_digits(text: str) -> bool:
+    return any(ch.isdigit() for ch in text)
+
+
+def _is_negation(token: str) -> bool:
+    return token in MUST_KEEP or (len(token) >= 5 and token.startswith(("не", "ни")))
+
+
 def _match(word: str, token: str) -> bool:
     if word == token:
         return True
+    if _has_digits(word) or _has_digits(token):
+        return False
+    if _is_negation(word) != _is_negation(token):
+        return False
     if len(word) >= MIN_TOKEN_LEN and len(token) >= MIN_TOKEN_LEN:
         if word in token or token in word:
             return True
@@ -54,11 +67,17 @@ def _match(word: str, token: str) -> bool:
 def looks_faithful(raw: str, out: str) -> bool:
     if len(out) > MAX_OUTPUT_FACTOR * len(raw) + MAX_OUTPUT_EXTRA:
         return False
+    if any(unicodedata.category(ch) == "Cc" for ch in out):
+        return False
     raw_words = _content_words(raw)
     if not raw_words:
         return not _content_words(out)
     out_tokens = _tokens(out)
     if any(word in raw_words and word not in out_tokens for word in MUST_KEEP):
+        return False
+    if sum(1 for token in out_tokens if _is_negation(token)) > sum(
+        1 for word in raw_words if _is_negation(word)
+    ):
         return False
     matched, used = 0, set()
     for word in raw_words:
@@ -71,7 +90,7 @@ def looks_faithful(raw: str, out: str) -> bool:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
-    return len(extra) <= len(long_out) // EXTRA_DIVISOR
+    return len(extra) <= min(len(long_out) // EXTRA_DIVISOR, 1)
 
 
 def ends_sentence(text: str) -> bool:
