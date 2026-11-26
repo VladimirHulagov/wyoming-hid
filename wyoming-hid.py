@@ -91,11 +91,14 @@ def type_text(text: str, method: str = "xdotool"):
 
 
 class Typist:
+    LISTENING_MARK = "🎤 ..."
+
     def __init__(self, method: str, overlay):
         self.method = method
         self.overlay = overlay
         self.formatter = None
         self.live_partial = False
+        self.listening = False
 
     def on_partial(self, text: str):
         self.live_partial = bool(text)
@@ -108,6 +111,7 @@ class Typist:
 
     def on_final(self, text: str):
         self.live_partial = False
+        self.listening = False
         if self.formatter:
             self.formatter.submit(text)
         else:
@@ -118,13 +122,15 @@ class Typist:
             if new_state == State.IDLE:
                 self.hide_if_idle()
             elif new_state == State.DICTATING:
-                self.overlay.show("🎤 ...")
+                self.overlay.show(self.LISTENING_MARK)
+        self.listening = new_state == State.DICTATING
         if self.formatter and new_state == State.DICTATING:
             self.formatter.reset()
 
     def hide_if_idle(self):
         if (
             self.overlay
+            and not self.listening
             and not self.live_partial
             and (self.formatter is None or self.formatter.pending_count == 0)
         ):

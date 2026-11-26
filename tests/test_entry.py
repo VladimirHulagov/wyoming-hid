@@ -142,6 +142,19 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
             typing("Привет.")
         self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
 
+    async def test_listening_session_keeps_overlay_on_old_result(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.formatter.pending.append("старая фраза")
+        typing.on_state_change(module.State.IDLE, module.State.DICTATING)
+        self.assertEqual(overlay.calls, [("show", "🎤 ...")])
+        typing.formatter.pending.clear()
+        with patch.object(module.subprocess, "run"):
+            typing(" Старая фраза.")
+        self.assertEqual(overlay.calls, [("show", "🎤 ...")])
+
     async def test_shutdown_types_pending_and_closes_formatter(self):
         module = load_entry_module()
         original = signal.getsignal(signal.SIGINT)
