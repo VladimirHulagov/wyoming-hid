@@ -1054,7 +1054,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         await self.wait_typed(1)
         self.assertEqual(self.typed, ["Первый."])
         await formatter.close()
-        self.assertEqual(self.typed, ["Первый.", " второй"])
+        self.assertEqual(self.typed, ["Первый.", " Второй"])
         self.assertTrue(client.closed)
 
     async def test_reset_clears_context_only(self):
@@ -1099,7 +1099,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
     async def test_cooldown(self):
         clock = FakeClock()
         client = FakeClient(
-            [LLMError("a"), LLMError("b"), LLMError("c"), "Never.", "Пять."]
+            [LLMError("a"), LLMError("b"), LLMError("c"), "Пять."]
         )
         formatter = OrderedFormatter(
             client, self.on_text, cooldown_after=3, cooldown_seconds=60.0, clock=clock
