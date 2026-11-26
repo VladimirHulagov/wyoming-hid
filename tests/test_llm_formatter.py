@@ -208,7 +208,8 @@ class TestResolveApiKey(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_explicit_wins(self):
-        self.assertEqual(resolve_api_key("explicit"), "explicit")
+        with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
+            self.assertEqual(resolve_api_key("explicit"), "explicit")
 
     def test_env(self):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
