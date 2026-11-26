@@ -118,6 +118,14 @@ class TestTextHelpers(unittest.TestCase):
     def test_faithful_stutter_removed(self):
         self.assertTrue(looks_faithful("мы пошли пошли в магазин", "Мы пошли в магазин."))
 
+    def test_unfaithful_dropped_non_adjacent_repeat(self):
+        self.assertFalse(
+            looks_faithful(
+                "включи камеру и выключи микрофон и включи запись",
+                "Включи камеру, выключи микрофон и запись.",
+            )
+        )
+
     def test_faithful_glued_words_with_short_pieces(self):
         self.assertTrue(looks_faithful("даяснял или не снял", "Да, я снял или не снял."))
 
