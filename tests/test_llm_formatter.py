@@ -155,7 +155,7 @@ class TestTextHelpers(unittest.TestCase):
 
 class TestBuildMessages(unittest.TestCase):
     def test_without_context(self):
-        messages = build_messages("привет мир", [])
+        messages = build_messages("  привет мир  ", [])
         self.assertEqual(
             messages,
             [
@@ -165,8 +165,20 @@ class TestBuildMessages(unittest.TestCase):
         )
 
     def test_with_context(self):
-        messages = build_messages("как дела", ["Привет."])
+        messages = build_messages("как дела", ["  Привет.  "])
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0], {"role": "system", "content": SYSTEM_PROMPT})
+        self.assertEqual(
+            messages[1],
+            {
+                "role": "user",
+                "content": "Уже напечатанный текст:\nПривет.\n\nНовая реплика без пунктуации:\nкак дела",
+            },
+        )
+
+    def test_with_two_context_entries(self):
+        messages = build_messages("река", ["Мы пошли и увидели", " море "])
         self.assertEqual(
             messages[1]["content"],
-            "Уже напечатанный текст:\nПривет.\n\nНовая реплика без пунктуации:\nкак дела",
+            "Уже напечатанный текст:\nМы пошли и увидели\nморе\n\nНовая реплика без пунктуации:\nрека",
         )
