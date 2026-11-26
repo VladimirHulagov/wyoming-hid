@@ -809,6 +809,8 @@ class LLMClient:
                 if resp.status != 200:
                     raise LLMError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
                 data = await resp.json(content_type=None)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"malformed JSON in response: {e}") from e
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             raise LLMError(str(e)) from e
         return _extract_content(data)
