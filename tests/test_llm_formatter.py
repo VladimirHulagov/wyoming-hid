@@ -5,8 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
 from llm_formatter import (
+    LLMClient,
     LLMConfigError,
+    LLMError,
     SYSTEM_PROMPT,
     build_messages,
     ends_sentence,
@@ -259,3 +264,67 @@ class TestResolveApiKey(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(LLMConfigError):
                 resolve_api_key()
+
+
+async def make_server(state):
+    calls = []
+
+    async def handler(request):
+        calls.append((await request.json(), request.headers.get("Authorization")))
+        return web.Response(status=state["status"], text=state["body"])
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    server = TestServer(app)
+    await server.start_server()
+    return server, calls
+
+
+def ok_body(content, finish_reason="stop"):
+    return json.dumps(
+        {"choices": [{"message": {"content": content}, "finish_reason": finish_reason}]}
+    )
+
+
+class TestLLMClient(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.state = {"status": 200, "body": ok_body("Привет.")}
+        self.server, self.calls = await make_server(self.state)
+        self.client = LLMClient(str(self.server.make_url("")), "secret", "m")
+        self.client.start()
+
+    async def asyncTearDown(self):
+        await self.client.close()
+        await self.server.close()
+
+    async def test_success(self):
+        self.assertEqual(await self.client.format("привет", []), "Привет.")
+        body, auth = self.calls[0]
+        self.assertEqual(body["model"], "m")
+        self.assertEqual(body["thinking"], {"type": "disabled"})
+        self.assertEqual(body["stream"], False)
+        self.assertEqual(body["temperature"], 0.2)
+        self.assertEqual(body["max_tokens"], 512)
+        self.assertEqual(body["messages"][0], {"role": "system", "content": SYSTEM_PROMPT})
+        self.assertEqual(auth, "Bearer secret")
+
+    async def test_http_error(self):
+        self.state.update(status=500, body="boom")
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertIn("HTTP 500", str(ctx.exception))
+
+    async def test_empty_content(self):
+        self.state["body"] = ok_body("   ")
+        with self.assertRaises(LLMError):
+            await self.client.format("привет", [])
+
+    async def test_truncated(self):
+        self.state["body"] = ok_body("Обрез", finish_reason="length")
+        with self.assertRaises(LLMError):
+            await self.client.format("привет", [])
+
+    async def test_malformed(self):
+        self.state["body"] = "not json"
+        with self.assertRaises(LLMError):
+            await self.client.format("привет", [])

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -11,7 +12,9 @@ import string
 import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
+
+import aiohttp
 
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 DEFAULT_MODEL = "glm-5.3-flash"
@@ -178,3 +181,66 @@ def resolve_api_key(explicit: Optional[str] = None, allow_auth_store: bool = Tru
     raise LLMConfigError(
         "No API key: set llm.api_key in config.yaml, export ZAI_API_KEY or log in to opencode"
     )
+
+
+OnText = Callable[[str], None]
+
+
+class LLMError(Exception):
+    pass
+
+
+class LLMClient:
+    def __init__(self, base_url: str, api_key: str, model: str, timeout: float = DEFAULT_TIMEOUT):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    def start(self) -> None:
+        if self._session is None:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+                headers={"Authorization": f"Bearer {self.api_key}"},
+            )
+
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+    async def format(self, raw: str, context: Sequence[str]) -> str:
+        if self._session is None:
+            raise LLMError("client is not started")
+        body = {
+            "model": self.model,
+            "messages": build_messages(raw, context),
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "stream": False,
+            "thinking": {"type": "disabled"},
+        }
+        try:
+            async with self._session.post(self.base_url + "/chat/completions", json=body) as resp:
+                if resp.status != 200:
+                    raise LLMError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
+                data = await resp.json(content_type=None)
+        except json.JSONDecodeError as e:
+            raise LLMError(f"malformed JSON in response: {e}") from e
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            raise LLMError(str(e)) from e
+        return _extract_content(data)
+
+
+def _extract_content(data: dict) -> str:
+    try:
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise LLMError("output truncated (finish_reason=length)")
+        content = choice["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise LLMError(f"unexpected response: {str(data)[:200]}") from e
+    if not content or not content.strip():
+        raise LLMError("empty content")
+    return content.strip()
