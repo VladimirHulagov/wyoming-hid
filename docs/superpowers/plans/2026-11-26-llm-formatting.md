@@ -2549,3 +2549,7 @@ git commit -m "test: add smoke script for the real API"
 **2. Placeholder scan:** no placeholders; every step has complete code and exact commands.
 
 **3. Type consistency:** `OrderedFormatter(client, on_text, timeout, concurrency, context_utterances, cooldown_after, cooldown_seconds, clock)` with attributes `client`, `timeout`, `concurrency`, `context_size`, `pending_count` and methods `submit(raw)`, `reset()`, `close()`; `LLMClient(base_url, api_key, model, timeout)` with attributes `base_url`, `api_key`, `model`, `timeout` and methods `start()`, `close()`, `format(raw, context)`; `build_formatter(llm_cfg, on_text)`; `StreamingSTT(..., defer_overlay_hide=False)`; `resolve_api_key(explicit=None)`, `AUTH_STORE_PATH`, `AUTH_STORE_PROVIDER`, `LLMConfigError`, `LLMError`, `OnText`.
+
+## Post-Review Fixes
+
+Applied after the final code review (listings above are not updated): per-session separator state in `OrderedFormatter` (`_tails` keyed by session start, `_emit(text, seq)`); `--` before the text in the `xdotool` command; `SIGTERM` handled like `SIGINT`; strict `enabled` and positive `timeout` validation; only `finish_reason == "stop"` accepted; all `C*` categories and `Zl`/`Zp` rejected in the guard; `aiohttp` imported lazily (missing `aiohttp` disables formatting); tests for each; "Limitations" in the README and in the spec.

@@ -73,6 +73,12 @@ llm:
 
 The API key is read from `llm.api_key`, then from `ZAI_API_KEY`, then from the opencode auth store (the last one only for the default `base_url`, so that the stored key is never sent to another host). The default `base_url` is the z.ai coding-plan endpoint, which z.ai limits to supported tools; for a regular z.ai API key use `https://api.z.ai/api/paas/v4`.
 
+### Limitations
+
+- A request takes about 2 s. Results are typed strictly in order, so one slow request (up to the timeout) delays the utterances queued behind it.
+- The model sees the previous one or two formatted utterances as context, as of the start of each request.
+- The guard that protects against invented text is strict but not complete: a stutter may be merged, one unexplained word is tolerated in longer outputs, and up to 10 % of the content words may be dropped by the model. Unintelligible speech may be typed with punctuation instead of raw.
+
 ## Usage
 
 ### Direct Run

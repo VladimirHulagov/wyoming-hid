@@ -175,6 +175,9 @@ typed within ~3 s of finalization, order preserved; a log line per utterance.
 - The model may correct misrecognized words; the faithfulness guard allows corrections but rejects
   invented content.
 - A stalled request (observed once: 134 s to first token) is cut by the per-request timeout.
+- Results are typed strictly in order: one slow request delays the utterances queued behind it (seen: 4.8 s).
+- The state machine can emit the same utterance twice on a rare pre-existing path (a server final arriving after a partial); both copies are formatted and typed.
+- Unintelligible speech may come back punctuated and pass the guard.
 
 ## Out of scope
 
