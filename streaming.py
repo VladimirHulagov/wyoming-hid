@@ -24,6 +24,7 @@ class StreamingSTT:
         on_partial=None,
         on_final=None,
         on_state_change=None,
+        defer_overlay_hide: bool = False,
     ):
         self.ws = ws
         self.wake_norm = self._normalize(wake_phrase)
@@ -33,6 +34,7 @@ class StreamingSTT:
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_state_change = on_state_change
+        self._defer_overlay_hide = defer_overlay_hide
         self._idle_counter = 0
         self._has_typed = False
         self._running = True
@@ -187,7 +189,7 @@ class StreamingSTT:
             self._on_final(typed_text)
         self._has_typed = True
 
-        if self._on_partial:
+        if self._on_partial and not self._defer_overlay_hide:
             self._on_partial("")
 
         log.info("Finalized: '%s'", text)
@@ -227,7 +229,7 @@ class StreamingSTT:
                 self._on_final(typed_text)
             self._has_typed = True
 
-            if self._on_partial:
+            if self._on_partial and not self._defer_overlay_hide:
                 self._on_partial("")
 
             log.info("Final (from server): '%s'", text)
