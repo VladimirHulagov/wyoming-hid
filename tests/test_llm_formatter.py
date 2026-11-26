@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import socket
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -116,6 +117,13 @@ class TestTextHelpers(unittest.TestCase):
     def test_unfaithful_control_characters(self):
         self.assertFalse(looks_faithful("привет мир", "Привет\nмир."))
         self.assertFalse(looks_faithful("привет мир", "Привет\tмир."))
+        for raw, out in (
+            ("привет мир", "Привет\u2028мир."),
+            ("привет мир", "Привет\u200bмир."),
+            ("привет мир", "Привет\u202eмир."),
+        ):
+            with self.subTest(out=out):
+                self.assertFalse(looks_faithful(raw, out))
 
     def test_unfaithful_one_word_preamble(self):
         self.assertFalse(looks_faithful("привет как дела", "Отлично, привет, как дела?"))
@@ -331,6 +339,13 @@ class TestLLMClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
         self.assertIn("finish_reason", str(ctx.exception))
+
+    async def test_finish_reason_must_be_stop(self):
+        for finish_reason in (None, "length", "sensitive"):
+            with self.subTest(finish_reason=finish_reason):
+                self.state["body"] = ok_body("Обрез", finish_reason=finish_reason)
+                with self.assertRaises(LLMError):
+                    await self.client.format("привет", [])
 
     async def test_malformed(self):
         self.state["body"] = "not json"
@@ -659,6 +674,8 @@ class TestBuildFormatter(unittest.TestCase):
     def test_disabled_returns_none(self):
         self.assertIsNone(build_formatter(None, self.on_text))
         self.assertIsNone(build_formatter({"enabled": False}, self.on_text))
+        self.assertIsNone(build_formatter({"enabled": "false"}, self.on_text))
+        self.assertIsNone(build_formatter({"enabled": 0}, self.on_text))
 
     def test_non_dict_section_returns_none(self):
         with patch("llm_formatter.resolve_api_key", return_value="k"):
@@ -697,6 +714,10 @@ class TestBuildFormatter(unittest.TestCase):
                 self.assertIsNone(build_formatter({}, self.on_text))
 
     def test_malformed_values_return_none(self):
-        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"context_utterances": "many"}):
+        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"context_utterances": "many"}, {"timeout": 0}):
             with self.subTest(cfg=cfg), patch("llm_formatter.resolve_api_key", return_value="k"), self.assertLogs("wyoming-hid", level="ERROR"):
                 self.assertIsNone(build_formatter(cfg, self.on_text))
+
+    def test_aiohttp_missing_disables_formatting(self):
+        with patch.dict(sys.modules, {"aiohttp": None}), self.assertLogs("wyoming-hid", level="ERROR"):
+            self.assertIsNone(build_formatter({}, self.on_text))

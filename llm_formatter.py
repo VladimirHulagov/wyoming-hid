@@ -16,8 +16,6 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
-import aiohttp
-
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 DEFAULT_MODEL = "glm-5.3-flash"
 DEFAULT_TIMEOUT = 8.0
@@ -80,7 +78,10 @@ def _match(word: str, token: str) -> bool:
 def looks_faithful(raw: str, out: str) -> bool:
     if len(out) > MAX_OUTPUT_FACTOR * len(raw) + MAX_OUTPUT_EXTRA:
         return False
-    if any(unicodedata.category(ch) == "Cc" for ch in out):
+    if any(
+        unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp")
+        for ch in out
+    ):
         return False
     raw_words = _content_words(raw)
     if not raw_words:
@@ -194,13 +195,15 @@ class LLMError(Exception):
 
 class LLMClient:
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = DEFAULT_TIMEOUT):
+        import aiohttp
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session = None
 
     def start(self) -> None:
+        import aiohttp
         if self._session is None:
             self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
@@ -232,7 +235,7 @@ class LLMClient:
                 payload = await resp.read()
         except asyncio.TimeoutError as e:
             raise LLMError(f"timeout after {self.timeout:.1f}s") from e
-        except aiohttp.ClientError as e:
+        except Exception as e:
             raise LLMError(str(e)) from e
         try:
             data = json.loads(payload)
@@ -250,7 +253,7 @@ def _extract_content(data: object) -> str:
     if not isinstance(choice, dict):
         raise LLMError(f"unexpected response: {summary}")
     finish_reason = choice.get("finish_reason")
-    if finish_reason not in (None, "stop"):
+    if finish_reason != "stop":
         raise LLMError(f"unexpected finish_reason: {finish_reason}")
     message = choice.get("message")
     content = message.get("content") if isinstance(message, dict) else None
@@ -442,10 +445,14 @@ class OrderedFormatter:
 def build_formatter(llm_cfg: Optional[object], on_text: OnText) -> Optional[OrderedFormatter]:
     if not isinstance(llm_cfg, dict):
         return None
-    if not llm_cfg.get("enabled", True):
+    enabled = llm_cfg.get("enabled", True)
+    if enabled is not True and str(enabled).strip().lower() not in ("true", "yes", "on"):
         return None
     base_url = llm_cfg.get("base_url") or DEFAULT_BASE_URL
     try:
+        timeout = float(llm_cfg.get("timeout", DEFAULT_TIMEOUT))
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
         api_key = resolve_api_key(
             llm_cfg.get("api_key"), allow_auth_store=base_url == DEFAULT_BASE_URL
         )
@@ -454,13 +461,16 @@ def build_formatter(llm_cfg: Optional[object], on_text: OnText) -> Optional[Orde
                 base_url=base_url,
                 api_key=api_key,
                 model=llm_cfg.get("model") or DEFAULT_MODEL,
-                timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+                timeout=timeout,
             ),
             on_text,
-            timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+            timeout=timeout,
             concurrency=max(1, int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY))),
             context_utterances=max(0, int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES))),
         )
+    except ImportError:
+        log.error("LLM formatting is off: aiohttp is not installed")
+        return None
     except (LLMConfigError, AttributeError, TypeError, ValueError) as e:
         if isinstance(e, LLMConfigError):
             log.error("LLM formatting is off: %s", e)
