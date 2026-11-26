@@ -26,7 +26,7 @@ class TestTypeText(unittest.TestCase):
         with patch.object(module.subprocess, "run") as run:
             module.type_text(" мир")
         run.assert_called_once_with(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", " мир"],
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", " мир"],
             check=True,
             timeout=10,
         )
@@ -87,7 +87,7 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
             typing.formatter.pending.clear()
             typing("Привет.")
         run.assert_called_once_with(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", "Привет."],
             check=True,
             timeout=10,
         )
@@ -113,7 +113,7 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
         with patch.object(module.subprocess, "run") as run:
             typing("Привет.")
         run.assert_called_once_with(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", "Привет."],
             check=True,
             timeout=10,
         )
@@ -126,7 +126,7 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
         with patch.object(module.subprocess, "run") as run:
             typing.on_final("привет")
         run.assert_called_once_with(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "привет"],
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", "привет"],
             check=True,
             timeout=10,
         )
@@ -168,6 +168,7 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
     async def test_shutdown_types_pending_and_closes_formatter(self):
         module = load_entry_module()
         original = signal.getsignal(signal.SIGINT)
+        original_term = signal.getsignal(signal.SIGTERM)
         events = []
 
         class FakeStreamingSTT:
@@ -235,4 +236,5 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, timeout=10)
         finally:
             signal.signal(signal.SIGINT, original)
+            signal.signal(signal.SIGTERM, original_term)
         self.assertEqual(events, [("close",)])

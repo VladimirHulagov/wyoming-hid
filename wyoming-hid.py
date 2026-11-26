@@ -72,7 +72,7 @@ def type_text(text: str, method: str = "xdotool"):
     try:
         if method == "xdotool":
             subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", "--delay", "0", text],
+                ["xdotool", "type", "--clearmodifiers", "--delay", "0", "--", text],
                 check=True,
                 timeout=10,
             )
@@ -169,6 +169,7 @@ async def run_streaming(
 
     import signal
     signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
 
     try:
         while not shutting_down:
