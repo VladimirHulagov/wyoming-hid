@@ -159,20 +159,22 @@ class LLMConfigError(Exception):
     pass
 
 
-def resolve_api_key(explicit: Optional[str] = None) -> str:
-    if explicit:
-        return explicit
-    env_key = os.environ.get("ZAI_API_KEY")
-    if env_key:
-        return env_key
-    if AUTH_STORE_PATH.is_file():
+def resolve_api_key(explicit: Optional[str] = None, allow_auth_store: bool = True) -> str:
+    for candidate, source in ((explicit, "config"), (os.environ.get("ZAI_API_KEY"), "env")):
+        if isinstance(candidate, str) and candidate.strip():
+            log.info("llm: API key source: %s", source)
+            return candidate.strip()
+    if allow_auth_store:
         try:
-            data = json.loads(AUTH_STORE_PATH.read_text())
-            key = data.get(AUTH_STORE_PROVIDER, {}).get("key", "")
-            if key:
-                return key
-        except (OSError, ValueError):
-            log.warning("Could not read %s", AUTH_STORE_PATH)
+            if AUTH_STORE_PATH.is_file():
+                data = json.loads(AUTH_STORE_PATH.read_text(encoding="utf-8"))
+                entry = data.get(AUTH_STORE_PROVIDER) if isinstance(data, dict) else None
+                key = entry.get("key") if isinstance(entry, dict) else None
+                if isinstance(key, str) and key.strip():
+                    log.info("llm: API key source: opencode auth store")
+                    return key.strip()
+        except (OSError, ValueError) as e:
+            log.warning("Could not read %s (%s)", AUTH_STORE_PATH, type(e).__name__)
     raise LLMConfigError(
         "No API key: set llm.api_key in config.yaml, export ZAI_API_KEY or log in to opencode"
     )

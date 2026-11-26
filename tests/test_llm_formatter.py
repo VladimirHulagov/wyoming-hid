@@ -202,10 +202,11 @@ class TestBuildMessages(unittest.TestCase):
 class TestResolveApiKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.store = Path(self.tmp.name) / "auth.json"
-
-    def tearDown(self):
-        self.tmp.cleanup()
+        store_patch = patch("llm_formatter.AUTH_STORE_PATH", self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
 
     def test_explicit_wins(self):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
@@ -215,12 +216,46 @@ class TestResolveApiKey(unittest.TestCase):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
             self.assertEqual(resolve_api_key(), "env")
 
-    def test_auth_store(self):
+    def test_env_beats_store(self):
         self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
-        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+        with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
+            self.assertEqual(resolve_api_key(), "env")
+
+    def test_auth_store(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": " file "}}))
+        with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(resolve_api_key(), "file")
 
+    def test_auth_store_disabled(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(LLMConfigError):
+                resolve_api_key(allow_auth_store=False)
+
+    def test_blank_values_fall_through(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        with patch.dict(os.environ, {"ZAI_API_KEY": "   "}):
+            self.assertEqual(resolve_api_key("   "), "file")
+
+    def test_malformed_store_raises(self):
+        for text in ("[]", "null", '{"zai-coding-plan": "key"}', '{"zai-coding-plan": {"key": 123}}', "{"):
+            self.store.write_text(text)
+            with self.subTest(text=text), patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(LLMConfigError):
+                    resolve_api_key()
+
+    def test_unreadable_store_raises(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file permissions")
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        self.addCleanup(Path(self.tmp.name).chmod, 0o700)
+        Path(self.tmp.name).chmod(0)
+        with patch.dict(os.environ, {}, clear=True), self.assertLogs("wyoming-hid", level="WARNING") as logs:
+            with self.assertRaises(LLMConfigError):
+                resolve_api_key()
+        self.assertNotIn("file", "\n".join(logs.output))
+
     def test_no_key(self):
-        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+        with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(LLMConfigError):
                 resolve_api_key()
