@@ -1614,7 +1614,23 @@ from llm_formatter import (
 )
 ```
 
-Append to `tests/test_llm_formatter.py`:
+Add this method at the end of `TestOrderedFormatter` in `tests/test_llm_formatter.py`:
+```python
+    async def test_reset_with_pending_utterance(self):
+        gate = asyncio.Event()
+        client = FakeClient(["Первый.", "Второй."], gates=[gate, None])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        await asyncio.sleep(0.01)
+        formatter.reset()
+        formatter.submit("второй")
+        gate.set()
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый.", "Второй."])
+        self.assertEqual(client.calls[1], ("второй", []))
+```
+
+Replace the whole class `TestBuildFormatter` in `tests/test_llm_formatter.py` with:
 ```python
 class TestBuildFormatter(unittest.TestCase):
     def setUp(self):
@@ -1626,6 +1642,12 @@ class TestBuildFormatter(unittest.TestCase):
     def test_disabled_returns_none(self):
         self.assertIsNone(build_formatter(None, self.on_text))
         self.assertIsNone(build_formatter({"enabled": False}, self.on_text))
+
+    def test_non_dict_section_returns_none(self):
+        with patch("llm_formatter.resolve_api_key", return_value="k"):
+            self.assertIsNone(build_formatter("yes", self.on_text))
+            self.assertIsNone(build_formatter(False, self.on_text))
+            self.assertIsNone(build_formatter([], self.on_text))
 
     def test_defaults(self):
         with patch("llm_formatter.resolve_api_key", return_value="k"):
@@ -1656,6 +1678,11 @@ class TestBuildFormatter(unittest.TestCase):
         with patch("llm_formatter.resolve_api_key", side_effect=LLMConfigError("no key")):
             with self.assertLogs("wyoming-hid", level="ERROR"):
                 self.assertIsNone(build_formatter({}, self.on_text))
+
+    def test_malformed_values_return_none(self):
+        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"base_url": None}):
+            with self.subTest(cfg=cfg), patch("llm_formatter.resolve_api_key", return_value="k"), self.assertLogs("wyoming-hid", level="ERROR"):
+                self.assertIsNone(build_formatter(cfg, self.on_text))
 ```
 
 Create `tests/test_entry.py`:
@@ -1664,6 +1691,7 @@ import asyncio
 import importlib.util
 import signal
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -1699,29 +1727,114 @@ class TestTypeText(unittest.TestCase):
         run.assert_not_called()
 
 
-class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
-    async def test_final_goes_to_formatter(self):
+class FakeFormatter:
+    def __init__(self, events):
+        self.events = events
+        self.pending = []
+
+    @property
+    def pending_count(self):
+        return len(self.pending)
+
+    def submit(self, text):
+        self.pending.append(text)
+        self.events.append(("submit", text))
+
+    def reset(self):
+        self.events.append(("reset",))
+
+    async def close(self):
+        self.events.append(("close",))
+
+
+class FakeOverlay:
+    def __init__(self):
+        self.calls = []
+
+    def update(self, text):
+        self.calls.append(("update", text))
+
+    def show(self, text):
+        self.calls.append(("show", text))
+
+    def hide(self):
+        self.calls.append(("hide",))
+
+
+class TestTypist(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_kept_until_formatted_text_is_typed(self):
         module = load_entry_module()
         events = []
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter(events)
+        with patch.object(module.subprocess, "run") as run:
+            typing.on_partial("привет")
+            typing.on_final("привет")
+            self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
+            self.assertEqual(events, [("submit", "привет")])
+            typing("Привет.")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет"), ("hide",)])
+
+    async def test_overlay_hidden_on_idle_when_nothing_pending(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.on_state_change(module.State.DICTATING, module.State.IDLE)
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_overlay_kept_on_idle_while_pending(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.formatter.pending.append("привет")
+        typing.on_state_change(module.State.DICTATING, module.State.IDLE)
+        self.assertEqual(overlay.calls, [])
+        typing("Привет.")
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_raw_path_types_and_hides(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        with patch.object(module.subprocess, "run") as run:
+            typing.on_final("привет")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "привет"],
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_live_partial_keeps_overlay(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.on_partial("привет")
+        with patch.object(module.subprocess, "run"):
+            typing("Привет.")
+        self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
+
+    async def test_shutdown_types_pending_and_closes_formatter(self):
+        module = load_entry_module()
         original = signal.getsignal(signal.SIGINT)
-
-        class FakeFormatter:
-            def submit(self, text):
-                events.append(("submit", text))
-
-            def reset(self):
-                events.append(("reset",))
-
-            async def close(self):
-                events.append(("close",))
-
-        callbacks = {}
+        events = []
 
         class FakeStreamingSTT:
+            started = False
+            defer = None
+
             def __init__(self, ws, wake_phrase, stop_phrase, on_partial, on_final, on_state_change, defer_overlay_hide=False):
-                callbacks["on_final"] = on_final
-                callbacks["on_state_change"] = on_state_change
-                callbacks["defer"] = defer_overlay_hide
+                FakeStreamingSTT.started = True
+                FakeStreamingSTT.defer = defer_overlay_hide
 
             async def start_session(self):
                 pass
@@ -1730,10 +1843,11 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(3600)
 
             async def send_audio(self, data):
-                raise module.websockets.ConnectionClosed(None, None)
+                pass
 
         class FakeStream:
             def read(self, n, exception_on_overflow=False):
+                time.sleep(0.005)
                 return b"\x00" * n
 
             def stop_stream(self):
@@ -1750,46 +1864,36 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                 pass
 
         class FakeWSContext:
-            def __init__(self, ws):
-                self.ws = ws
-
             async def __aenter__(self):
-                return self.ws
+                return object()
 
             async def __aexit__(self, *exc):
                 return False
 
         class FakeConnect:
-            def __init__(self):
-                self.calls = 0
-
             def __call__(self, url, **kwargs):
-                self.calls += 1
-                if self.calls > 1:
-                    raise KeyboardInterrupt
-                return FakeWSContext(object())
+                return FakeWSContext()
 
         fake_pyaudio = SimpleNamespace(PyAudio=FakePyAudio, paInt16=8)
-
+        typing = module.Typist("xdotool", None)
+        typing.formatter = FakeFormatter(events)
         try:
-            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", fake_pyaudio), patch.object(module.websockets, "connect", FakeConnect()), patch.object(module, "build_formatter", lambda cfg, on_text: FakeFormatter()):
+            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", fake_pyaudio), patch.object(module.websockets, "connect", FakeConnect()):
                 task = asyncio.ensure_future(module.run_streaming(
-                    "ws://x/stt", "", "xdotool", wake_phrase="w", stop_phrase="s",
-                    idle_timeout=15, use_overlay=False, overlay_opacity=0.85,
-                    overlay_font_size=18, llm_cfg={},
+                    "ws://x/stt", "", typing, wake_phrase="w", stop_phrase="s",
+                    idle_timeout=15,
                 ))
                 for _ in range(300):
-                    if "on_final" in callbacks:
+                    if FakeStreamingSTT.started:
                         break
                     await asyncio.sleep(0.01)
-                self.assertIn("on_final", callbacks)
-                self.assertTrue(callbacks["defer"])
-                callbacks["on_final"]("привет")
-                callbacks["on_state_change"](module.State.IDLE, module.State.DICTATING)
+                self.assertTrue(FakeStreamingSTT.started)
+                self.assertTrue(FakeStreamingSTT.defer)
+                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
                 await asyncio.wait_for(task, timeout=10)
         finally:
             signal.signal(signal.SIGINT, original)
-        self.assertEqual(events, [("submit", "привет"), ("reset",), ("close",)])
+        self.assertEqual(events, [("close",)])
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1798,121 +1902,133 @@ Run:
 ```bash
 python3 -m pytest tests/test_entry.py tests/test_llm_formatter.py -q
 ```
-Expected: `python3 -m pytest tests/test_entry.py tests/test_llm_formatter.py -q` stops at the collection error of `tests/test_llm_formatter.py` (`ImportError: cannot import name 'build_formatter'`); run `python3 -m pytest tests/test_entry.py -q` separately: `2 failed, 1 passed` (`test_preserves_leading_space`: the command was called with `'мир'` instead of `' мир'`; `test_final_goes_to_formatter`: `AttributeError: ... does not have the attribute 'build_formatter'`, because the entry module only gets that attribute in Step 3)
+Expected: in `tests/test_llm_formatter.py` the tests `test_reset_with_pending_utterance`, `test_non_dict_section_returns_none` and `test_malformed_values_return_none` fail; in `tests/test_entry.py` the six `TestTypist` tests fail with `AttributeError: module 'wyoming_hid_entry' has no attribute 'Typist'`; the two `TestTypeText` tests pass (they went green with the first version of this task). Run the suite three times: the result must be stable.
 
 - [ ] **Step 3: Implement**
 
-Append to `llm_formatter.py`:
+In `llm_formatter.py`:
+- in `OrderedFormatter.__init__` add `self._session_start = 0` directly after `self._tail: Optional[str] = None`;
+- replace `reset` with:
 ```python
-def build_formatter(
-    llm_cfg: Optional[dict], on_text: OnText
-) -> Optional[OrderedFormatter]:
-    if llm_cfg is None:
+    def reset(self) -> None:
+        self._context.clear()
+        self._tail = None
+        self._session_start = self._next_seq
+```
+- in `_run` replace the emit call `await self._emit(formatted if formatted is not None else raw)` with:
+```python
+                await self._emit(
+                    formatted if formatted is not None else raw,
+                    track=seq >= self._session_start,
+                )
+```
+- replace `_emit` with:
+```python
+    async def _emit(self, text: str, track: bool = True) -> None:
+        out = normalize(self._tail, text) if track else text
+        if track:
+            self._tail = out
+            if self._context.maxlen:
+                self._context.append(out)
+        typing_task = asyncio.ensure_future(asyncio.to_thread(self._on_text, out))
+        self._typing = typing_task
+        try:
+            await asyncio.shield(typing_task)
+        except Exception:
+            log.exception("llm: typing failed, text dropped: %r", out)
+        finally:
+            if typing_task.done():
+                self._typing = None
+```
+- in `close` replace both lines `await self._emit(raw)` with `await self._emit(raw, track=seq >= self._session_start)`;
+- replace the whole `build_formatter` function with:
+```python
+def build_formatter(llm_cfg: Optional[object], on_text: OnText) -> Optional[OrderedFormatter]:
+    if not isinstance(llm_cfg, dict):
         return None
     if not llm_cfg.get("enabled", True):
         return None
-    base_url = llm_cfg.get("base_url", DEFAULT_BASE_URL)
+    base_url = llm_cfg.get("base_url") or DEFAULT_BASE_URL
     try:
         api_key = resolve_api_key(
             llm_cfg.get("api_key"), allow_auth_store=base_url == DEFAULT_BASE_URL
         )
-    except LLMConfigError as e:
-        log.error("LLM formatting is off: %s", e)
+        return OrderedFormatter(
+            LLMClient(
+                base_url=base_url,
+                api_key=api_key,
+                model=llm_cfg.get("model") or DEFAULT_MODEL,
+                timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+            ),
+            on_text,
+            timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+            concurrency=max(1, int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY))),
+            context_utterances=max(0, int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES))),
+        )
+    except (LLMConfigError, AttributeError, TypeError, ValueError) as e:
+        if isinstance(e, LLMConfigError):
+            log.error("LLM formatting is off: %s", e)
+        else:
+            log.error("LLM formatting is off: invalid llm configuration (%s)", type(e).__name__)
         return None
-    client = LLMClient(
-        base_url=base_url,
-        api_key=api_key,
-        model=llm_cfg.get("model", DEFAULT_MODEL),
-        timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
-    )
-    return OrderedFormatter(
-        client,
-        on_text,
-        timeout=client.timeout,
-        concurrency=int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY)),
-        context_utterances=int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES)),
-    )
 ```
 
-In `wyoming-hid.py` add `from llm_formatter import build_formatter` directly below `from streaming import State, StreamingSTT`, and replace `type_text`, `run_streaming` and `main` with the versions below.
+In `wyoming-hid.py` replace everything from the line `async def run_streaming(` up to the end of the file with the listing below; `type_text` and everything above it stay as they are.
+
 ```python
-def type_text(text: str, method: str = "xdotool"):
-    if not text.strip():
-        return
-    log.info("Typing: %s", text)
-    try:
-        if method == "xdotool":
-            subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", "--delay", "0", text],
-                check=True,
-                timeout=10,
-            )
-        elif method == "ydotool":
-            subprocess.run(
-                ["ydotool", "type", "--key-delay", "0", text],
-                check=True,
-                timeout=10,
-            )
-    except FileNotFoundError:
-        log.error("Typing tool '%s' not found", method)
-    except subprocess.TimeoutExpired:
-        log.error("Typing timed out")
-    except subprocess.CalledProcessError as e:
-        log.error("Typing failed: %s", e)
+class Typist:
+    def __init__(self, method: str, overlay):
+        self.method = method
+        self.overlay = overlay
+        self.formatter = None
+        self.live_partial = False
+
+    def on_partial(self, text: str):
+        self.live_partial = bool(text)
+        if self.overlay:
+            if text:
+                self.overlay.update(text)
+                self.overlay.show(text)
+            else:
+                self.overlay.hide()
+
+    def on_final(self, text: str):
+        self.live_partial = False
+        if self.formatter:
+            self.formatter.submit(text)
+        else:
+            self(text)
+
+    def on_state_change(self, old: State, new_state: State):
+        if self.overlay:
+            if new_state == State.IDLE:
+                self.hide_if_idle()
+            elif new_state == State.DICTATING:
+                self.overlay.show("🎤 ...")
+        if self.formatter and new_state == State.DICTATING:
+            self.formatter.reset()
+
+    def hide_if_idle(self):
+        if (
+            self.overlay
+            and not self.live_partial
+            and (self.formatter is None or self.formatter.pending_count == 0)
+        ):
+            self.overlay.hide()
+
+    def __call__(self, text: str):
+        type_text(text, self.method)
+        self.hide_if_idle()
 
 
 async def run_streaming(
     ws_url: str,
     auth_header: str,
-    typing_method: str,
+    typing: Typist,
     wake_phrase: str,
     stop_phrase: str,
     idle_timeout: float,
-    use_overlay: bool,
-    overlay_opacity: float,
-    overlay_font_size: int,
-    llm_cfg=None,
 ):
-    overlay = None
-    if use_overlay:
-        try:
-            overlay = GTKOverlay(opacity=overlay_opacity, font_size=overlay_font_size)
-            overlay.start()
-            log.info("Overlay started")
-        except Exception as e:
-            log.warning("Overlay failed, falling back to console: %s", e)
-            overlay = None
-
-    def on_text(text: str):
-        type_text(text, typing_method)
-        if overlay and formatter.pending_count == 0:
-            overlay.hide()
-
-    formatter = build_formatter(llm_cfg, on_text)
-
-    def on_partial(text: str):
-        if overlay:
-            if text:
-                overlay.update(text)
-                overlay.show(text)
-            else:
-                overlay.hide()
-
-    def on_final(text: str):
-        if formatter:
-            formatter.submit(text)
-        else:
-            type_text(text, typing_method)
-
-    def on_state_change(old: State, new_state: State):
-        if overlay:
-            if new_state == State.IDLE:
-                overlay.hide()
-            elif new_state == State.DICTATING:
-                overlay.show("🎤 ...")
-        if formatter and new_state == State.DICTATING:
-            formatter.reset()
-
     extra_headers = {"Proxy-Authorization": auth_header} if auth_header else {}
 
     backoff = 1
@@ -1960,10 +2076,10 @@ async def run_streaming(
                         ws,
                         wake_phrase=wake_phrase,
                         stop_phrase=stop_phrase,
-                        on_partial=on_partial,
-                        on_final=on_final,
-                        on_state_change=on_state_change,
-                        defer_overlay_hide=formatter is not None,
+                        on_partial=typing.on_partial,
+                        on_final=typing.on_final,
+                        on_state_change=typing.on_state_change,
+                        defer_overlay_hide=typing.formatter is not None,
                     )
 
                     await stt.start_session()
@@ -2023,22 +2139,22 @@ async def run_streaming(
                         stream.close()
                         mic_stop.set()
                         pa.terminate()
-                        if overlay:
-                            overlay.hide()
+                        if typing.overlay:
+                            typing.overlay.hide()
 
             except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
                 if shutting_down:
                     break
                 log.warning("Connection error: %s, retrying in %ds", e, backoff)
-                if overlay:
-                    overlay.show(f"⚠ Reconnecting ({backoff}s)...")
+                if typing.overlay:
+                    typing.overlay.show(f"⚠ Reconnecting ({backoff}s)...")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
             except KeyboardInterrupt:
                 shutting_down = True
     finally:
-        if formatter:
-            await formatter.close()
+        if typing.formatter:
+            await typing.formatter.close()
 
 
 def main():
@@ -2073,24 +2189,35 @@ def main():
     else:
         auth = ""
 
-    llm_cfg = cfg.get("llm") or {}
+    overlay = None
+    if use_overlay:
+        try:
+            overlay = GTKOverlay(opacity=overlay_opacity, font_size=overlay_font_size)
+            overlay.start()
+            log.info("Overlay started")
+        except Exception as e:
+            log.warning("Overlay failed, falling back to console: %s", e)
+            overlay = None
+
+    typing = Typist(typing_method, overlay)
+    formatter = None
+    try:
+        formatter = build_formatter(cfg.get("llm"), typing)
+    except Exception:
+        log.exception("LLM formatting is off: invalid llm configuration")
+    typing.formatter = formatter
 
     log.info(
         "URL: %s | Method: %s | Overlay: %s | LLM: %s",
-        ws_url, typing_method, use_overlay,
-        "on" if llm_cfg.get("enabled", True) else "off",
+        ws_url, typing_method, use_overlay, "on" if formatter else "off",
     )
 
     try:
         asyncio.run(run_streaming(
-            ws_url, auth, typing_method,
+            ws_url, auth, typing,
             wake_phrase=wake_phrase,
             stop_phrase=stop_phrase,
             idle_timeout=idle_timeout,
-            use_overlay=use_overlay,
-            overlay_opacity=overlay_opacity,
-            overlay_font_size=overlay_font_size,
-            llm_cfg=llm_cfg,
         ))
     except KeyboardInterrupt:
         pass
@@ -2106,7 +2233,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `77 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
+Expected: `85 passed` (pytest 9 appends `, 5 subtests passed`)
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2120,10 +2247,8 @@ Expected: usage text, exit code 0
 
 ```bash
 git add wyoming-hid.py llm_formatter.py tests/test_entry.py tests/test_llm_formatter.py
-git commit -m "feat: format finalized utterances with GLM-5.3-Flash before typing"
+git commit -m "fix: make the llm section opt-in, keep the overlay live and isolate sessions"
 ```
-
----
 
 ### Task 8: Config and docs
 
@@ -2282,7 +2407,7 @@ async def main():
             done.set()
 
     config = yaml.safe_load((ROOT / "config.yaml").read_text()) or {}
-    formatter = build_formatter(config.get("llm") or {}, on_text)
+    formatter = build_formatter(config.get("llm"), on_text)
     if formatter is None:
         print("LLM formatting is disabled (check the llm section of config.yaml)")
         return 1
@@ -2326,7 +2451,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `77 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
+Expected: `85 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
 
 Run:
 ```bash

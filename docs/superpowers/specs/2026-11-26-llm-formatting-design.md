@@ -98,24 +98,33 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
     output, unfaithful output, truncated output;
   - after `cooldown_after` consecutive failures formatting is skipped for `cooldown_seconds`
     (raw text is typed immediately); a success resets the counter;
-  - `reset()` - clears the context and the separator state, so a new dictation session starts
-    without a leading space; the queue and in-flight tasks are untouched;
+  - `reset()` - starts a new session: clears the context and the separator state, and utterances
+    submitted before the reset are typed without touching them, so the first fragment of the new
+    session never gets a leading space even when an old request is still in flight; the queue and
+    in-flight tasks are untouched;
   - `close()` - cancels the consumer, types the raw text for every pending utterance in order
     (the utterance being awaited first), closes the client.
 
 ### Wiring
 
-- `load_config`: new optional section `llm` (defaults below).
-- `build_formatter(llm_cfg, on_text)`: returns an `OrderedFormatter`, or `None` when the section
-  is missing, disabled, or no API key can be resolved (a warning is logged, raw text is typed).
-- `run_streaming(..., llm_cfg)`:
-  - the formatter is created once, after the overlay, outside the reconnect loop;
-  - `on_final` -> `formatter.submit(raw)`;
-  - `on_state_change` to DICTATING -> `formatter.reset()` (a new dictation session starts);
-  - `on_text` -> `type_text(text)` in a worker thread, then `overlay.hide()`;
-  - after the outer loop: `await formatter.close()`.
-- `StreamingSTT(..., defer_overlay_hide=False)`: with the formatter, `on_partial("")` after a
-  final is skipped; the overlay keeps the raw text until the formatted text is typed.
+- `load_config`: new optional section `llm` (defaults below). Formatting is opt-in: without an `llm`
+  section (or with `enabled: false`, or a section that is not a mapping) no formatter is built and the
+  raw text is typed exactly as before.
+- `build_formatter(llm_cfg, on_text)`: returns an `OrderedFormatter`, or `None` when the section is
+  missing or not a mapping, disabled, no API key can be resolved, or a value is malformed (an error
+  is logged, raw text is typed; the tool never crashes because of its `llm` configuration).
+- `main()`: creates the overlay and a `Typist`, builds the formatter once (before the event loop
+  starts), logs `LLM: on/off` according to the result, and passes both to `run_streaming`.
+- `Typist(method, overlay)` in `wyoming-hid.py` owns the state-machine callbacks:
+  - `on_partial`: remembers whether a live partial is shown, shows or hides the overlay;
+  - `on_final`: submits to the formatter, or types directly when there is no formatter;
+  - `on_state_change`: on IDLE hides the overlay only when nothing is pending and no live partial
+    is shown (so the raw text stays visible until the formatted text is typed); on DICTATING shows
+    the listening overlay and resets the formatter's session;
+  - called as `on_text` (from a worker thread) it types the text and hides the overlay when idle.
+- `run_streaming(ws_url, auth_header, typing, wake_phrase, stop_phrase, idle_timeout)`: connects the
+  `Typist` callbacks to `StreamingSTT` with `defer_overlay_hide=True` when a formatter exists; on
+  shutdown (`finally`) closes the formatter, which types pending utterances as raw text in order.
 - `type_text` no longer strips the text. Bug fix: the leading separator that the state machine
   adds was stripped, so consecutive utterances were glued together.
 
