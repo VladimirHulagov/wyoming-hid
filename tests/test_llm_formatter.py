@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -271,6 +273,8 @@ async def make_server(state):
 
     async def handler(request):
         calls.append((await request.json(), request.headers.get("Authorization")))
+        if state.get("delay"):
+            await asyncio.sleep(state["delay"])
         return web.Response(status=state["status"], text=state["body"])
 
     app = web.Application()
@@ -288,7 +292,7 @@ def ok_body(content, finish_reason="stop"):
 
 class TestLLMClient(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.state = {"status": 200, "body": ok_body("Привет.")}
+        self.state = {"status": 200, "body": ok_body("Привет."), "delay": 0}
         self.server, self.calls = await make_server(self.state)
         self.client = LLMClient(str(self.server.make_url("")), "secret", "m")
         self.client.start()
@@ -316,15 +320,68 @@ class TestLLMClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_content(self):
         self.state["body"] = ok_body("   ")
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "empty content")
 
     async def test_truncated(self):
         self.state["body"] = ok_body("Обрез", finish_reason="length")
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertIn("finish_reason", str(ctx.exception))
 
     async def test_malformed(self):
         self.state["body"] = "not json"
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertIn("malformed JSON", str(ctx.exception))
+
+    async def test_content_is_not_a_string(self):
+        self.state["body"] = json.dumps(
+            {"choices": [{"message": {"content": [{"type": "text", "text": "Привет."}]},
+                          "finish_reason": "stop"}]}
+        )
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertIn("unexpected response", str(ctx.exception))
+
+    async def test_null_choice(self):
+        self.state["body"] = json.dumps({"choices": [None]})
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertIn("unexpected response", str(ctx.exception))
+
+    async def test_timeout(self):
+        self.state["delay"] = 1.0
+        client = LLMClient(str(self.server.make_url("")), "secret", "m", timeout=0.1)
+        client.start()
+        try:
+            with self.assertRaises(LLMError) as ctx:
+                await client.format("привет", [])
+        finally:
+            await client.close()
+        self.assertEqual(str(ctx.exception), "timeout after 0.1s")
+
+    async def test_connection_refused(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        client = LLMClient(f"http://127.0.0.1:{port}", "secret", "m")
+        client.start()
+        try:
+            with self.assertRaises(LLMError):
+                await client.format("привет", [])
+        finally:
+            await client.close()
+
+    async def test_not_started(self):
+        client = LLMClient(str(self.server.make_url("")), "secret", "m")
+        with self.assertRaises(LLMError) as ctx:
+            await client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "client is not started")
+
+    async def test_closed(self):
+        await self.client.close()
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "client is not started")

@@ -224,23 +224,36 @@ class LLMClient:
         try:
             async with self._session.post(self.base_url + "/chat/completions", json=body) as resp:
                 if resp.status != 200:
-                    raise LLMError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
-                data = await resp.json(content_type=None)
-        except json.JSONDecodeError as e:
-            raise LLMError(f"malformed JSON in response: {e}") from e
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    raise LLMError(
+                        f"HTTP {resp.status}: {(await resp.text(errors='replace'))[:200]}"
+                    )
+                payload = await resp.read()
+        except asyncio.TimeoutError as e:
+            raise LLMError(f"timeout after {self.timeout:.1f}s") from e
+        except aiohttp.ClientError as e:
             raise LLMError(str(e)) from e
+        try:
+            data = json.loads(payload)
+        except ValueError as e:
+            raise LLMError(f"malformed JSON in response: {e}") from e
         return _extract_content(data)
 
 
-def _extract_content(data: dict) -> str:
-    try:
-        choice = data["choices"][0]
-        if choice.get("finish_reason") == "length":
-            raise LLMError("output truncated (finish_reason=length)")
-        content = choice["message"]["content"]
-    except (KeyError, IndexError, TypeError) as e:
-        raise LLMError(f"unexpected response: {str(data)[:200]}") from e
-    if not content or not content.strip():
+def _extract_content(data: object) -> str:
+    summary = str(data)[:200]
+    if not isinstance(data, dict):
+        raise LLMError(f"unexpected response: {summary}")
+    choices = data.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, dict):
+        raise LLMError(f"unexpected response: {summary}")
+    finish_reason = choice.get("finish_reason")
+    if finish_reason not in (None, "stop"):
+        raise LLMError(f"unexpected finish_reason: {finish_reason}")
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMError(f"unexpected response: {summary}")
+    if not content.strip():
         raise LLMError("empty content")
     return content.strip()
