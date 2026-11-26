@@ -81,13 +81,16 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
 - `OrderedFormatter(client, on_text, timeout=8.0, concurrency=4, context_utterances=2,
   cooldown_after=3, cooldown_seconds=60.0, clock=time.monotonic)`:
   - `submit(raw) -> seq` - synchronous, never blocks: stores the raw text, assigns `seq`,
-    creates the task and makes sure the consumer task is running;
+    creates the task and makes sure the consumer task is running; after `close()` it logs a
+    warning and types the raw text directly; concurrency is at least 1;
   - the consumer awaits tasks strictly in `seq` order and calls `on_text(text)` sequentially
     (`on_text` is a plain callable invoked in a worker thread); the context for the next
-    requests is the last `context_utterances` emitted texts;
-  - `_process` - cooldown check, request under the semaphore with `asyncio.wait_for(timeout)`,
-    validation (`looks_faithful`); returns the formatted text or the raw text; only request
-    errors and timeouts count towards the cooldown;
+    requests is the last `context_utterances` emitted texts as of the start of the request (a
+    request that starts before its predecessor is emitted does not see it);
+  - `_process` - cooldown check (repeated after acquiring the semaphore), request under the
+    semaphore with `asyncio.wait_for(timeout)`, validation (`looks_faithful` in a worker
+    thread); returns the formatted text or `None`; only request errors and timeouts count
+    towards the cooldown;
   - after emitting, if `ends_sentence(prev)` and the new text starts with a lowercase letter,
     the first character is uppercased; text starting with punctuation is left as is;
   - one INFO log line per utterance: seq, queue wait, API time, total time, mode (formatted/raw).
@@ -95,9 +98,10 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
     output, unfaithful output, truncated output;
   - after `cooldown_after` consecutive failures formatting is skipped for `cooldown_seconds`
     (raw text is typed immediately); a success resets the counter;
-  - `reset()` - clears the context only; queue, separator state and in-flight tasks are untouched;
-  - `close()` - cancels the consumer, types the raw text for every pending utterance in order,
-    closes the client.
+  - `reset()` - clears the context and the separator state, so a new dictation session starts
+    without a leading space; the queue and in-flight tasks are untouched;
+  - `close()` - cancels the consumer, types the raw text for every pending utterance in order
+    (the utterance being awaited first), closes the client.
 
 ### Wiring
 
