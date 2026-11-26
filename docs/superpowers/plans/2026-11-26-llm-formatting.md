@@ -2427,10 +2427,10 @@ class OutcomeTracker(logging.Handler):
         message = record.getMessage()
         if not message.startswith("llm: seq="):
             return
-        seq_text, rest = message.split(" ", 2)[1:]
-        if rest.startswith("formatted"):
+        seq_text = message.split(" ", 2)[1]
+        if message.endswith(" formatted"):
             self.outcome[int(seq_text[4:])] = "formatted"
-        elif "typing raw" in rest:
+        elif "typing raw" in message:
             self.outcome[int(seq_text[4:])] = "raw"
 
 
@@ -2467,10 +2467,10 @@ async def main():
     started = time.monotonic()
     typed.clear()
     done.clear()
-    for raw in UTTERANCES:
+    for index, raw in enumerate(UTTERANCES):
         current["raw"] = raw
         before = len(typed)
-        formatter.submit(raw)
+        seqs[formatter.submit(raw)] = index
         while len(typed) == before:
             await asyncio.sleep(0.05)
     current["raw"] = ""
