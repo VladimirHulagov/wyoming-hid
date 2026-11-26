@@ -497,10 +497,11 @@ Append to `tests/test_llm_formatter.py`:
 class TestResolveApiKey(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.store = Path(self.tmp.name) / "auth.json"
-
-    def tearDown(self):
-        self.tmp.cleanup()
+        store_patch = patch("llm_formatter.AUTH_STORE_PATH", self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
 
     def test_explicit_wins(self):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
@@ -510,13 +511,47 @@ class TestResolveApiKey(unittest.TestCase):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
             self.assertEqual(resolve_api_key(), "env")
 
-    def test_auth_store(self):
+    def test_env_beats_store(self):
         self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
-        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+        with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
+            self.assertEqual(resolve_api_key(), "env")
+
+    def test_auth_store(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": " file "}}))
+        with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(resolve_api_key(), "file")
 
+    def test_auth_store_disabled(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(LLMConfigError):
+                resolve_api_key(allow_auth_store=False)
+
+    def test_blank_values_fall_through(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        with patch.dict(os.environ, {"ZAI_API_KEY": "   "}):
+            self.assertEqual(resolve_api_key("   "), "file")
+
+    def test_malformed_store_raises(self):
+        for text in ("[]", "null", '{"zai-coding-plan": "key"}', '{"zai-coding-plan": {"key": 123}}', "{"):
+            self.store.write_text(text)
+            with self.subTest(text=text), patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(LLMConfigError):
+                    resolve_api_key()
+
+    def test_unreadable_store_raises(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file permissions")
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        self.store.chmod(0)
+        self.addCleanup(self.store.chmod, 0o600)
+        with patch.dict(os.environ, {}, clear=True), self.assertLogs("wyoming-hid", level="WARNING") as logs:
+            with self.assertRaises(LLMConfigError):
+                resolve_api_key()
+        self.assertNotIn("file", "\n".join(logs.output))
+
     def test_no_key(self):
-        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+        with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(LLMConfigError):
                 resolve_api_key()
 ```
@@ -563,20 +598,22 @@ class LLMConfigError(Exception):
     pass
 
 
-def resolve_api_key(explicit: Optional[str] = None) -> str:
-    if explicit:
-        return explicit
-    env_key = os.environ.get("ZAI_API_KEY")
-    if env_key:
-        return env_key
-    if AUTH_STORE_PATH.is_file():
+def resolve_api_key(explicit: Optional[str] = None, allow_auth_store: bool = True) -> str:
+    for candidate, source in ((explicit, "config"), (os.environ.get("ZAI_API_KEY"), "env")):
+        if isinstance(candidate, str) and candidate.strip():
+            log.info("llm: API key source: %s", source)
+            return candidate.strip()
+    if allow_auth_store:
         try:
-            data = json.loads(AUTH_STORE_PATH.read_text())
-            key = data.get(AUTH_STORE_PROVIDER, {}).get("key", "")
-            if key:
-                return key
-        except (OSError, ValueError):
-            log.warning("Could not read %s", AUTH_STORE_PATH)
+            if AUTH_STORE_PATH.is_file():
+                data = json.loads(AUTH_STORE_PATH.read_text(encoding="utf-8"))
+                entry = data.get(AUTH_STORE_PROVIDER) if isinstance(data, dict) else None
+                key = entry.get("key") if isinstance(entry, dict) else None
+                if isinstance(key, str) and key.strip():
+                    log.info("llm: API key source: opencode auth store")
+                    return key.strip()
+        except (OSError, ValueError) as e:
+            log.warning("Could not read %s (%s)", AUTH_STORE_PATH, type(e).__name__)
     raise LLMConfigError(
         "No API key: set llm.api_key in config.yaml, export ZAI_API_KEY or log in to opencode"
     )
@@ -588,7 +625,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `37 passed`
+Expected: `42 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -796,7 +833,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `42 passed`
+Expected: `47 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1181,7 +1218,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `51 passed`
+Expected: `56 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1606,13 +1643,16 @@ def build_formatter(
         return None
     if not llm_cfg.get("enabled", True):
         return None
+    base_url = llm_cfg.get("base_url", DEFAULT_BASE_URL)
     try:
-        api_key = resolve_api_key(llm_cfg.get("api_key"))
+        api_key = resolve_api_key(
+            llm_cfg.get("api_key"), allow_auth_store=base_url == DEFAULT_BASE_URL
+        )
     except LLMConfigError as e:
         log.error("LLM formatting is off: %s", e)
         return None
     client = LLMClient(
-        base_url=llm_cfg.get("base_url", DEFAULT_BASE_URL),
+        base_url=base_url,
         api_key=api_key,
         model=llm_cfg.get("model", DEFAULT_MODEL),
         timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
@@ -1898,7 +1938,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `60 passed`
+Expected: `65 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2116,7 +2156,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `60 passed`
+Expected: `65 passed`
 
 Run:
 ```bash

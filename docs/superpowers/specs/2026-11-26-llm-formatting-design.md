@@ -68,8 +68,12 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   - non-streaming POST to `{base_url}/chat/completions`, `temperature 0.2`, `max_tokens 512`,
     `thinking: {"type": "disabled"}`;
   - raises `LLMError` on non-200 status, malformed JSON, empty content or `finish_reason == "length"`.
-- `resolve_api_key(explicit) -> str` - `explicit` from config, then `ZAI_API_KEY`,
-  then `~/.local/share/opencode/auth.json` key `zai-coding-plan`; raises `LLMConfigError` if none.
+- `resolve_api_key(explicit, allow_auth_store=True) -> str` - `explicit` from config, then `ZAI_API_KEY`,
+  then the `key` of the `zai-coding-plan` entry of `~/.local/share/opencode/auth.json` (only when
+  `allow_auth_store` is true, i.e. when the base URL is the default z.ai URL, so that the stored key is
+  never sent to another host); blank or non-string values are skipped, keys are stripped, an unreadable
+  or malformed store logs a warning (path and exception type only, never the content) and raises
+  `LLMConfigError`; the key source (config, env, store) is logged at INFO, never the key itself.
 - `OrderedFormatter(client, on_text, timeout=8.0, concurrency=4, context_utterances=2,
   cooldown_after=3, cooldown_seconds=60.0, clock=time.monotonic)`:
   - `submit(raw) -> seq` - synchronous, never blocks: stores the raw text, assigns `seq`,
