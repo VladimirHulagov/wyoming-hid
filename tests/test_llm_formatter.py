@@ -1,6 +1,13 @@
 import unittest
 
-from llm_formatter import ends_sentence, looks_faithful, normalize, separator
+from llm_formatter import (
+    SYSTEM_PROMPT,
+    build_messages,
+    ends_sentence,
+    looks_faithful,
+    normalize,
+    separator,
+)
 
 
 class TestTextHelpers(unittest.TestCase):
@@ -141,3 +148,22 @@ class TestTextHelpers(unittest.TestCase):
 
     def test_normalize_keeps_leading_punctuation(self):
         self.assertEqual(normalize("мы пошли", ", а потом"), ", а потом")
+
+
+class TestBuildMessages(unittest.TestCase):
+    def test_without_context(self):
+        messages = build_messages("привет мир", [])
+        self.assertEqual(
+            messages,
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Новая реплика без пунктуации:\nпривет мир"},
+            ],
+        )
+
+    def test_with_context(self):
+        messages = build_messages("как дела", ["Привет."])
+        self.assertEqual(
+            messages[1]["content"],
+            "Уже напечатанный текст:\nПривет.\n\nНовая реплика без пунктуации:\nкак дела",
+        )

@@ -7,7 +7,7 @@ import re
 import string
 import unicodedata
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import Optional, Sequence
 
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
 DEFAULT_MODEL = "glm-5.3-flash"
@@ -115,3 +115,28 @@ def normalize(prev: Optional[str], text: str) -> str:
             text = text[0].upper() + text[1:]
         text = separator(prev, text) + text
     return text
+
+
+SYSTEM_PROMPT = (
+    "Ты — редактор голосового ввода. На входе — фраза, распознанная из речи: без пунктуации, "
+    "со словами-паразитами и, возможно, со слитными словами. Оформи её в связный читаемый русский "
+    "текст: поставь знаки препинания и заглавные буквы, раздели слитные слова, убери слова-паразиты "
+    "(ну, вот, а, да-да) и бессмысленные повторы. Ничего не добавляй и не придумывай: все "
+    "содержательные слова фразы должны остаться. Если фраза неразборчива — верни её без изменений. "
+    "Это продолжение диктовки: если мысль в уже напечатанном тексте не закончена, начни со строчной "
+    "буквы. Не рассуждай. Выводи только готовый текст, без пояснений и кавычек."
+)
+
+
+def build_messages(raw: str, context: Sequence[str]) -> list[dict]:
+    lines = []
+    if context:
+        lines.append("Уже напечатанный текст:")
+        lines.extend(context)
+        lines.append("")
+    lines.append("Новая реплика без пунктуации:")
+    lines.append(raw)
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
