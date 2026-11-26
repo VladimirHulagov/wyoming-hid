@@ -33,8 +33,12 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
 
 ### `llm_formatter.py`
 
-- `SYSTEM_PROMPT`, `build_messages(raw, context)` - system prompt is a constant Russian text;
-  the user message contains up to N formatted context lines and the raw utterance.
+- `SYSTEM_PROMPT`, `build_messages(raw, context)` - system prompt is a constant Russian text (rules:
+  punctuation and capitalization, glued words split, fillers and stutter removed, conjunctions and
+  prepositions kept, obvious ASR errors corrected, nothing added, unintelligible phrases returned
+  unchanged, lower case only when the printed text does not end a sentence, context block is for
+  reference only, no explanations, quotes or markup); the user message contains up to N formatted
+  context lines and the raw utterance, both stripped of surrounding whitespace.
 - `looks_faithful(raw, out) -> bool` - a guard against invented or dropped content. It rejects the
   output (`False`) when any of the following holds:
   - `len(out) > 2.5 * len(raw) + 20`;
@@ -46,8 +50,9 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   - a negation of `raw` is missing or an extra negation is added. Negations are the standalone tokens
     `не` and `ни` and tokens of 5 or more characters starting with `не`/`ни`: every standalone negation
     of `raw` must be present in `out`, and `out` must not contain more negations than `raw`;
-  - fewer than 90 % of the content words of `raw` are matched to tokens of `out`. A raw content word
-    matches an output token by exact match, by substring (both >= 3 chars) or by `SequenceMatcher`
+  - fewer than 90 % of the distinct content words of `raw` are matched to tokens of `out` (repeated
+    raw words count once, so a stutter such as "пошли пошли" may be merged by the model). A raw content
+    word matches an output token by exact match, by substring (both >= 3 chars) or by `SequenceMatcher`
     ratio >= 0.6 (both >= 4 chars); each output token is used at most once; tokens containing digits
     only match exactly; a negated token never matches a non-negated one (so `важно` does not match
     `неважно`). ASR error corrections such as "попоавит" -> "поправит" pass;

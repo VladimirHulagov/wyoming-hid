@@ -150,8 +150,11 @@ class TestTextHelpers(unittest.TestCase):
             )
         )
 
-    def test_unfaithful_repeated_word(self):
-        self.assertFalse(looks_faithful("про про про про про", "Проверка."))
+    def test_unfaithful_half_of_the_words_dropped(self):
+        self.assertFalse(looks_faithful("иван петр", "Иван."))
+
+    def test_faithful_stutter_removed(self):
+        self.assertTrue(looks_faithful("мы пошли пошли в магазин", "Мы пошли в магазин."))
 
     def test_faithful_glued_words_with_short_pieces(self):
         self.assertTrue(looks_faithful("даяснял или не снял", "Да, я снял или не снял."))
@@ -281,14 +284,15 @@ def looks_faithful(raw: str, out: str) -> bool:
         1 for word in raw_words if _is_negation(word)
     ):
         return False
+    unique_words = list(dict.fromkeys(raw_words))
     matched, used = 0, set()
-    for word in raw_words:
+    for word in unique_words:
         for index, token in enumerate(out_tokens):
             if index not in used and _match(word, token):
                 matched += 1
                 used.add(index)
                 break
-    if matched / len(raw_words) < FAITHFUL_RATIO:
+    if matched / len(unique_words) < FAITHFUL_RATIO:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
@@ -325,7 +329,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `28 passed`
+Expected: `29 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -362,7 +366,7 @@ Append to `tests/test_llm_formatter.py`:
 ```python
 class TestBuildMessages(unittest.TestCase):
     def test_without_context(self):
-        messages = build_messages("привет мир", [])
+        messages = build_messages("  привет мир  ", [])
         self.assertEqual(
             messages,
             [
@@ -372,10 +376,22 @@ class TestBuildMessages(unittest.TestCase):
         )
 
     def test_with_context(self):
-        messages = build_messages("как дела", ["Привет."])
+        messages = build_messages("как дела", ["  Привет.  "])
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[0], {"role": "system", "content": SYSTEM_PROMPT})
+        self.assertEqual(
+            messages[1],
+            {
+                "role": "user",
+                "content": "Уже напечатанный текст:\nПривет.\n\nНовая реплика без пунктуации:\nкак дела",
+            },
+        )
+
+    def test_with_two_context_entries(self):
+        messages = build_messages("река", ["Мы пошли и увидели", " море "])
         self.assertEqual(
             messages[1]["content"],
-            "Уже напечатанный текст:\nПривет.\n\nНовая реплика без пунктуации:\nкак дела",
+            "Уже напечатанный текст:\nМы пошли и увидели\nморе\n\nНовая реплика без пунктуации:\nрека",
         )
 ```
 
@@ -397,10 +413,13 @@ SYSTEM_PROMPT = (
     "Ты — редактор голосового ввода. На входе — фраза, распознанная из речи: без пунктуации, "
     "со словами-паразитами и, возможно, со слитными словами. Оформи её в связный читаемый русский "
     "текст: поставь знаки препинания и заглавные буквы, раздели слитные слова, убери слова-паразиты "
-    "(ну, вот, а, да-да) и бессмысленные повторы. Ничего не добавляй и не придумывай: все "
-    "содержательные слова фразы должны остаться. Если фраза неразборчива — верни её без изменений. "
-    "Это продолжение диктовки: если мысль в уже напечатанном тексте не закончена, начни со строчной "
-    "буквы. Не рассуждай. Выводи только готовый текст, без пояснений и кавычек."
+    "(ну, вот, а, да-да, угу, ага) и бессмысленные повторы соседних слов. Союзы, предлоги и ответы "
+    "«да»/«нет» сохраняй. Очевидные ошибки распознавания исправляй, остальное не переписывай. "
+    "Ничего не добавляй и не придумывай: все содержательные слова фразы должны остаться. Если фраза "
+    "неразборчива — верни её без изменений. Если уже напечатанного текста нет или он заканчивается "
+    "знаком конца предложения, начни с заглавной буквы; иначе — со строчной. Блок «Уже напечатанный "
+    "текст» приведён только для ориентира: не повторяй его и не изменяй. Не рассуждай. Выводи только "
+    "готовый текст новой реплики, без пояснений, кавычек и разметки."
 )
 
 
@@ -408,10 +427,10 @@ def build_messages(raw: str, context: Sequence[str]) -> list[dict]:
     lines = []
     if context:
         lines.append("Уже напечатанный текст:")
-        lines.extend(context)
+        lines.extend(entry.strip() for entry in context)
         lines.append("")
     lines.append("Новая реплика без пунктуации:")
-    lines.append(raw)
+    lines.append(raw.strip())
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": "\n".join(lines)},
@@ -424,7 +443,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `30 passed`
+Expected: `32 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -558,7 +577,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `34 passed`
+Expected: `36 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -765,7 +784,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `39 passed`
+Expected: `41 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1150,7 +1169,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `48 passed`
+Expected: `50 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1867,7 +1886,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `57 passed`
+Expected: `59 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2011,6 +2030,7 @@ class ModeCounter(logging.Handler):
         super().__init__(level=logging.INFO)
         self.formatted = 0
         self.raw = 0
+        self.unchanged = 0
 
     def emit(self, record):
         message = record.getMessage()
@@ -2030,8 +2050,11 @@ async def main():
     typed = []
     started = time.monotonic()
     done = asyncio.Event()
+    current = {"raw": ""}
 
     def on_text(text):
+        if current["raw"] and text.strip() == current["raw"].strip():
+            counter.unchanged += 1
         typed.append(text)
         elapsed = time.monotonic() - started
         print(f"{elapsed:6.2f}s  typed: {text}", flush=True)
@@ -2047,9 +2070,20 @@ async def main():
         formatter.submit(raw)
         await asyncio.sleep(0.4)
     await asyncio.wait_for(done.wait(), timeout=120)
+
+    started = time.monotonic()
+    typed.clear()
+    for raw in UTTERANCES:
+        current["raw"] = raw
+        before = len(typed)
+        formatter.submit(raw)
+        while len(typed) == before:
+            await asyncio.sleep(0.05)
+    current["raw"] = ""
     await formatter.close()
-    print(f"formatted={counter.formatted} raw={counter.raw}")
-    return 0 if counter.raw <= len(UTTERANCES) // 10 else 1
+    total = len(UTTERANCES) * 2
+    print(f"formatted={counter.formatted} unchanged={counter.unchanged} raw={counter.raw}")
+    return 0 if (counter.formatted + counter.unchanged) * 10 >= total * 9 else 1
 
 
 if __name__ == "__main__":
@@ -2062,7 +2096,7 @@ Run:
 ```bash
 python3 scripts/llm_smoke.py
 ```
-Expected: nine `typed:` lines; each line appears roughly 2-3 s after its utterance was submitted (utterances are submitted 0.4 s apart, so the first line appears at about 2.5 s and the last at about 6 s); the last line is `formatted=9 raw=0` (a single `raw=1` is acceptable); exit code 0. The typed text itself depends on the model.
+Expected: eighteen `typed:` lines, nine from the parallel pass (submitted 0.4 s apart, each line appears roughly 2-3 s after its submission) and nine from the sequential pass (each line appears roughly 2-3 s after the previous one); the last line is `formatted=9 unchanged=0 raw=0` (a single `raw=1` or `unchanged=1` is acceptable); exit code 0. The typed text itself depends on the model.
 
 - [ ] **Step 3: Final verification**
 
@@ -2070,7 +2104,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `57 passed`
+Expected: `59 passed`
 
 Run:
 ```bash
