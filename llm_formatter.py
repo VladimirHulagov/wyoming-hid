@@ -79,14 +79,15 @@ def looks_faithful(raw: str, out: str) -> bool:
         1 for word in raw_words if _is_negation(word)
     ):
         return False
+    unique_words = list(dict.fromkeys(raw_words))
     matched, used = 0, set()
-    for word in raw_words:
+    for word in unique_words:
         for index, token in enumerate(out_tokens):
             if index not in used and _match(word, token):
                 matched += 1
                 used.add(index)
                 break
-    if matched / len(raw_words) < FAITHFUL_RATIO:
+    if matched / len(unique_words) < FAITHFUL_RATIO:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]

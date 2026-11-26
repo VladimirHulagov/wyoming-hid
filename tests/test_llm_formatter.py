@@ -112,8 +112,11 @@ class TestTextHelpers(unittest.TestCase):
             )
         )
 
-    def test_unfaithful_repeated_word(self):
-        self.assertFalse(looks_faithful("про про про про про", "Проверка."))
+    def test_unfaithful_half_of_the_words_dropped(self):
+        self.assertFalse(looks_faithful("иван петр", "Иван."))
+
+    def test_faithful_stutter_removed(self):
+        self.assertTrue(looks_faithful("мы пошли пошли в магазин", "Мы пошли в магазин."))
 
     def test_faithful_glued_words_with_short_pieces(self):
         self.assertTrue(looks_faithful("даяснял или не снял", "Да, я снял или не снял."))
