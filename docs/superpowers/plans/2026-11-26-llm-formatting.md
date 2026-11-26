@@ -697,7 +697,7 @@ class TestLLMClient(unittest.IsolatedAsyncioTestCase):
         self.state = {"status": 200, "body": ok_body("Привет.")}
         self.server, self.calls = await make_server(self.state)
         self.client = LLMClient(str(self.server.make_url("")), "secret", "m")
-        await self.client.start()
+        self.client.start()
 
     async def asyncTearDown(self):
         await self.client.close()
