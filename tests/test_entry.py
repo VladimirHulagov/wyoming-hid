@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import signal
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,29 +38,122 @@ class TestTypeText(unittest.TestCase):
         run.assert_not_called()
 
 
-class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
-    async def test_final_goes_to_formatter(self):
+class FakeFormatter:
+    def __init__(self, events):
+        self.events = events
+        self.pending = []
+
+    @property
+    def pending_count(self):
+        return len(self.pending)
+
+    def submit(self, text):
+        self.pending.append(text)
+        self.events.append(("submit", text))
+
+    def reset(self):
+        self.events.append(("reset",))
+
+    async def close(self):
+        self.events.append(("close",))
+
+
+class FakeOverlay:
+    def __init__(self):
+        self.calls = []
+
+    def update(self, text):
+        self.calls.append(("update", text))
+
+    def show(self, text):
+        self.calls.append(("show", text))
+
+    def hide(self):
+        self.calls.append(("hide",))
+
+
+class TestTypist(unittest.IsolatedAsyncioTestCase):
+    async def test_overlay_kept_until_formatted_text_is_typed(self):
         module = load_entry_module()
         events = []
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter(events)
+        with patch.object(module.subprocess, "run") as run:
+            typing.on_partial("привет")
+            typing.on_final("привет")
+            self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
+            self.assertEqual(events, [("submit", "привет")])
+            typing.formatter.pending.clear()
+            typing("Привет.")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет"), ("hide",)])
+
+    async def test_overlay_hidden_on_idle_when_nothing_pending(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.on_state_change(module.State.DICTATING, module.State.IDLE)
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_overlay_kept_on_idle_while_pending(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.formatter.pending.append("привет")
+        typing.on_state_change(module.State.DICTATING, module.State.IDLE)
+        self.assertEqual(overlay.calls, [])
+        typing.formatter.pending.clear()
+        with patch.object(module.subprocess, "run") as run:
+            typing("Привет.")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_raw_path_types_and_hides(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        with patch.object(module.subprocess, "run") as run:
+            typing.on_final("привет")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "привет"],
+            check=True,
+            timeout=10,
+        )
+        self.assertEqual(overlay.calls, [("hide",)])
+
+    async def test_live_partial_keeps_overlay(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.on_partial("привет")
+        with patch.object(module.subprocess, "run"):
+            typing("Привет.")
+        self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
+
+    async def test_shutdown_types_pending_and_closes_formatter(self):
+        module = load_entry_module()
         original = signal.getsignal(signal.SIGINT)
-
-        class FakeFormatter:
-            def submit(self, text):
-                events.append(("submit", text))
-
-            def reset(self):
-                events.append(("reset",))
-
-            async def close(self):
-                events.append(("close",))
-
-        callbacks = {}
+        events = []
 
         class FakeStreamingSTT:
+            started = False
+            defer = None
+
             def __init__(self, ws, wake_phrase, stop_phrase, on_partial, on_final, on_state_change, defer_overlay_hide=False):
-                callbacks["on_final"] = on_final
-                callbacks["on_state_change"] = on_state_change
-                callbacks["defer"] = defer_overlay_hide
+                FakeStreamingSTT.started = True
+                FakeStreamingSTT.defer = defer_overlay_hide
 
             async def start_session(self):
                 pass
@@ -68,10 +162,11 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(3600)
 
             async def send_audio(self, data):
-                raise module.websockets.ConnectionClosed(None, None)
+                pass
 
         class FakeStream:
             def read(self, n, exception_on_overflow=False):
+                time.sleep(0.005)
                 return b"\x00" * n
 
             def stop_stream(self):
@@ -88,43 +183,33 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                 pass
 
         class FakeWSContext:
-            def __init__(self, ws):
-                self.ws = ws
-
             async def __aenter__(self):
-                return self.ws
+                return object()
 
             async def __aexit__(self, *exc):
                 return False
 
         class FakeConnect:
-            def __init__(self):
-                self.calls = 0
-
             def __call__(self, url, **kwargs):
-                self.calls += 1
-                if self.calls > 1:
-                    raise KeyboardInterrupt
-                return FakeWSContext(object())
+                return FakeWSContext()
 
         fake_pyaudio = SimpleNamespace(PyAudio=FakePyAudio, paInt16=8)
-
+        typing = module.Typist("xdotool", None)
+        typing.formatter = FakeFormatter(events)
         try:
-            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", fake_pyaudio), patch.object(module.websockets, "connect", FakeConnect()), patch.object(module, "build_formatter", lambda cfg, on_text: FakeFormatter()):
+            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", fake_pyaudio), patch.object(module.websockets, "connect", FakeConnect()):
                 task = asyncio.ensure_future(module.run_streaming(
-                    "ws://x/stt", "", "xdotool", wake_phrase="w", stop_phrase="s",
-                    idle_timeout=15, use_overlay=False, overlay_opacity=0.85,
-                    overlay_font_size=18, llm_cfg={},
+                    "ws://x/stt", "", typing, wake_phrase="w", stop_phrase="s",
+                    idle_timeout=15,
                 ))
                 for _ in range(300):
-                    if "on_final" in callbacks:
+                    if FakeStreamingSTT.started:
                         break
                     await asyncio.sleep(0.01)
-                self.assertIn("on_final", callbacks)
-                self.assertTrue(callbacks["defer"])
-                callbacks["on_final"]("привет")
-                callbacks["on_state_change"](module.State.IDLE, module.State.DICTATING)
+                self.assertTrue(FakeStreamingSTT.started)
+                self.assertTrue(FakeStreamingSTT.defer)
+                signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
                 await asyncio.wait_for(task, timeout=10)
         finally:
             signal.signal(signal.SIGINT, original)
-        self.assertEqual(events, [("submit", "привет"), ("reset",), ("close",)])
+        self.assertEqual(events, [("close",)])

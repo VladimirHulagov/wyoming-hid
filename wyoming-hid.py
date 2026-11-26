@@ -90,58 +90,59 @@ def type_text(text: str, method: str = "xdotool"):
         log.error("Typing failed: %s", e)
 
 
+class Typist:
+    def __init__(self, method: str, overlay):
+        self.method = method
+        self.overlay = overlay
+        self.formatter = None
+        self.live_partial = False
+
+    def on_partial(self, text: str):
+        self.live_partial = bool(text)
+        if self.overlay:
+            if text:
+                self.overlay.update(text)
+                self.overlay.show(text)
+            else:
+                self.overlay.hide()
+
+    def on_final(self, text: str):
+        self.live_partial = False
+        if self.formatter:
+            self.formatter.submit(text)
+        else:
+            self(text)
+
+    def on_state_change(self, old: State, new_state: State):
+        if self.overlay:
+            if new_state == State.IDLE:
+                self.hide_if_idle()
+            elif new_state == State.DICTATING:
+                self.overlay.show("🎤 ...")
+        if self.formatter and new_state == State.DICTATING:
+            self.formatter.reset()
+
+    def hide_if_idle(self):
+        if (
+            self.overlay
+            and not self.live_partial
+            and (self.formatter is None or self.formatter.pending_count == 0)
+        ):
+            self.overlay.hide()
+
+    def __call__(self, text: str):
+        type_text(text, self.method)
+        self.hide_if_idle()
+
+
 async def run_streaming(
     ws_url: str,
     auth_header: str,
-    typing_method: str,
+    typing: Typist,
     wake_phrase: str,
     stop_phrase: str,
     idle_timeout: float,
-    use_overlay: bool,
-    overlay_opacity: float,
-    overlay_font_size: int,
-    llm_cfg=None,
 ):
-    overlay = None
-    if use_overlay:
-        try:
-            overlay = GTKOverlay(opacity=overlay_opacity, font_size=overlay_font_size)
-            overlay.start()
-            log.info("Overlay started")
-        except Exception as e:
-            log.warning("Overlay failed, falling back to console: %s", e)
-            overlay = None
-
-    def on_text(text: str):
-        type_text(text, typing_method)
-        if overlay and formatter.pending_count == 0:
-            overlay.hide()
-
-    formatter = build_formatter(llm_cfg, on_text)
-
-    def on_partial(text: str):
-        if overlay:
-            if text:
-                overlay.update(text)
-                overlay.show(text)
-            else:
-                overlay.hide()
-
-    def on_final(text: str):
-        if formatter:
-            formatter.submit(text)
-        else:
-            type_text(text, typing_method)
-
-    def on_state_change(old: State, new_state: State):
-        if overlay:
-            if new_state == State.IDLE:
-                overlay.hide()
-            elif new_state == State.DICTATING:
-                overlay.show("🎤 ...")
-        if formatter and new_state == State.DICTATING:
-            formatter.reset()
-
     extra_headers = {"Proxy-Authorization": auth_header} if auth_header else {}
 
     backoff = 1
@@ -189,10 +190,10 @@ async def run_streaming(
                         ws,
                         wake_phrase=wake_phrase,
                         stop_phrase=stop_phrase,
-                        on_partial=on_partial,
-                        on_final=on_final,
-                        on_state_change=on_state_change,
-                        defer_overlay_hide=formatter is not None,
+                        on_partial=typing.on_partial,
+                        on_final=typing.on_final,
+                        on_state_change=typing.on_state_change,
+                        defer_overlay_hide=typing.formatter is not None,
                     )
 
                     await stt.start_session()
@@ -252,22 +253,22 @@ async def run_streaming(
                         stream.close()
                         mic_stop.set()
                         pa.terminate()
-                        if overlay:
-                            overlay.hide()
+                        if typing.overlay:
+                            typing.overlay.hide()
 
             except (websockets.ConnectionClosed, ConnectionError, OSError) as e:
                 if shutting_down:
                     break
                 log.warning("Connection error: %s, retrying in %ds", e, backoff)
-                if overlay:
-                    overlay.show(f"⚠ Reconnecting ({backoff}s)...")
+                if typing.overlay:
+                    typing.overlay.show(f"⚠ Reconnecting ({backoff}s)...")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
             except KeyboardInterrupt:
                 shutting_down = True
     finally:
-        if formatter:
-            await formatter.close()
+        if typing.formatter:
+            await typing.formatter.close()
 
 
 def main():
@@ -302,24 +303,35 @@ def main():
     else:
         auth = ""
 
-    llm_cfg = cfg.get("llm") or {}
+    overlay = None
+    if use_overlay:
+        try:
+            overlay = GTKOverlay(opacity=overlay_opacity, font_size=overlay_font_size)
+            overlay.start()
+            log.info("Overlay started")
+        except Exception as e:
+            log.warning("Overlay failed, falling back to console: %s", e)
+            overlay = None
+
+    typing = Typist(typing_method, overlay)
+    formatter = None
+    try:
+        formatter = build_formatter(cfg.get("llm"), typing)
+    except Exception:
+        log.exception("LLM formatting is off: invalid llm configuration")
+    typing.formatter = formatter
 
     log.info(
         "URL: %s | Method: %s | Overlay: %s | LLM: %s",
-        ws_url, typing_method, use_overlay,
-        "on" if llm_cfg.get("enabled", True) else "off",
+        ws_url, typing_method, use_overlay, "on" if formatter else "off",
     )
 
     try:
         asyncio.run(run_streaming(
-            ws_url, auth, typing_method,
+            ws_url, auth, typing,
             wake_phrase=wake_phrase,
             stop_phrase=stop_phrase,
             idle_timeout=idle_timeout,
-            use_overlay=use_overlay,
-            overlay_opacity=overlay_opacity,
-            overlay_font_size=overlay_font_size,
-            llm_cfg=llm_cfg,
         ))
     except KeyboardInterrupt:
         pass

@@ -622,6 +622,19 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.typed, ["Первый.", "второй"])
         self.assertEqual(len(client.calls), 1)
 
+    async def test_reset_with_pending_utterance(self):
+        gate = asyncio.Event()
+        client = FakeClient(["Первый.", "Второй."], gates=[gate, None])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        await asyncio.sleep(0.01)
+        formatter.reset()
+        formatter.submit("второй")
+        gate.set()
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый.", "Второй."])
+        self.assertEqual(client.calls[1], ("второй", []))
+
 
 class TestBuildFormatter(unittest.TestCase):
     def setUp(self):
@@ -633,6 +646,12 @@ class TestBuildFormatter(unittest.TestCase):
     def test_disabled_returns_none(self):
         self.assertIsNone(build_formatter(None, self.on_text))
         self.assertIsNone(build_formatter({"enabled": False}, self.on_text))
+
+    def test_non_dict_section_returns_none(self):
+        with patch("llm_formatter.resolve_api_key", return_value="k"):
+            self.assertIsNone(build_formatter("yes", self.on_text))
+            self.assertIsNone(build_formatter(False, self.on_text))
+            self.assertIsNone(build_formatter([], self.on_text))
 
     def test_defaults(self):
         with patch("llm_formatter.resolve_api_key", return_value="k"):
@@ -663,3 +682,8 @@ class TestBuildFormatter(unittest.TestCase):
         with patch("llm_formatter.resolve_api_key", side_effect=LLMConfigError("no key")):
             with self.assertLogs("wyoming-hid", level="ERROR"):
                 self.assertIsNone(build_formatter({}, self.on_text))
+
+    def test_malformed_values_return_none(self):
+        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"context_utterances": "many"}):
+            with self.subTest(cfg=cfg), patch("llm_formatter.resolve_api_key", return_value="k"), self.assertLogs("wyoming-hid", level="ERROR"):
+                self.assertIsNone(build_formatter(cfg, self.on_text))

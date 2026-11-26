@@ -289,6 +289,7 @@ class OrderedFormatter:
         self._current: Optional[tuple[int, str, asyncio.Task]] = None
         self._typing: Optional[asyncio.Task] = None
         self._tail: Optional[str] = None
+        self._session_start = 0
         self._failures = 0
         self._disabled_until: Optional[float] = None
         self._closed = False
@@ -313,6 +314,7 @@ class OrderedFormatter:
     def reset(self) -> None:
         self._context.clear()
         self._tail = None
+        self._session_start = self._next_seq
 
     def _in_cooldown(self) -> bool:
         until = self._disabled_until
@@ -396,15 +398,19 @@ class OrderedFormatter:
                     log.exception("llm: seq=%d failed unexpectedly", seq)
                     formatted = None
                 self._current = None
-                await self._emit(formatted if formatted is not None else raw)
+                await self._emit(
+                    formatted if formatted is not None else raw,
+                    track=seq >= self._session_start,
+                )
         finally:
             self._consumer = None
 
-    async def _emit(self, text: str) -> None:
-        out = normalize(self._tail, text)
-        self._tail = out
-        if self._context.maxlen:
-            self._context.append(out)
+    async def _emit(self, text: str, track: bool = True) -> None:
+        out = normalize(self._tail, text) if track else text
+        if track:
+            self._tail = out
+            if self._context.maxlen:
+                self._context.append(out)
         typing_task = asyncio.ensure_future(asyncio.to_thread(self._on_text, out))
         self._typing = typing_task
         try:
@@ -428,39 +434,39 @@ class OrderedFormatter:
             seq, raw, task = self._current
             self._current = None
             task.cancel()
-            await self._emit(raw)
+            await self._emit(raw, track=seq >= self._session_start)
         for seq in sorted(self._pending):
             raw, task = self._pending.pop(seq)
             task.cancel()
-            await self._emit(raw)
+            await self._emit(raw, track=seq >= self._session_start)
         await self.client.close()
 
 
-def build_formatter(
-    llm_cfg: Optional[dict], on_text: OnText
-) -> Optional[OrderedFormatter]:
-    if llm_cfg is None:
+def build_formatter(llm_cfg: Optional[object], on_text: OnText) -> Optional[OrderedFormatter]:
+    if not isinstance(llm_cfg, dict):
         return None
     if not llm_cfg.get("enabled", True):
         return None
-    base_url = llm_cfg.get("base_url", DEFAULT_BASE_URL)
+    base_url = llm_cfg.get("base_url") or DEFAULT_BASE_URL
     try:
         api_key = resolve_api_key(
             llm_cfg.get("api_key"), allow_auth_store=base_url == DEFAULT_BASE_URL
         )
-    except LLMConfigError as e:
-        log.error("LLM formatting is off: %s", e)
+        return OrderedFormatter(
+            LLMClient(
+                base_url=base_url,
+                api_key=api_key,
+                model=llm_cfg.get("model") or DEFAULT_MODEL,
+                timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+            ),
+            on_text,
+            timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+            concurrency=max(1, int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY))),
+            context_utterances=max(0, int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES))),
+        )
+    except (LLMConfigError, AttributeError, TypeError, ValueError) as e:
+        if isinstance(e, LLMConfigError):
+            log.error("LLM formatting is off: %s", e)
+        else:
+            log.error("LLM formatting is off: invalid llm configuration (%s)", type(e).__name__)
         return None
-    client = LLMClient(
-        base_url=base_url,
-        api_key=api_key,
-        model=llm_cfg.get("model", DEFAULT_MODEL),
-        timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
-    )
-    return OrderedFormatter(
-        client,
-        on_text,
-        timeout=client.timeout,
-        concurrency=int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY)),
-        context_utterances=int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES)),
-    )
