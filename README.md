@@ -20,13 +20,13 @@ Supports wake-word activation and stop-word deactivation for hands-free operatio
 - PortAudio (`libportaudio2`, `python3-pyaudio`)
 - GTK3 (`gir1.2-gtk-3.0`, `python3-gi`)
 - `xdotool` (X11) or `ydotool` (Wayland)
-- Python packages: `pyaudio`, `websockets`, `pyyaml`, `audioop`
+- Python packages: `pyaudio`, `websockets`, `pyyaml`, `aiohttp`
 
 Install dependencies:
 
 ```bash
 sudo apt install xdotool libportaudio2 python3-pyaudio gir1.2-gtk-3.0 python3-gi
-pip3 install websockets pyyaml
+pip3 install websockets pyyaml aiohttp
 ```
 
 ## Configuration
@@ -55,6 +55,23 @@ overlay: true          # show floating overlay with partial results
 overlay_opacity: 0.8   # overlay transparency (0.0–1.0)
 overlay_font_size: 24  # font size for overlay text
 ```
+
+## LLM Formatting
+
+Formatting is opt-in: without an `llm` section in `config.yaml` the recognized text is typed as is. With the section, every finalized utterance is sent to GLM-5.3-Flash on z.ai before typing: punctuation, capitalization, glued words split and fillers removed. Requests run in parallel (up to `concurrency` in flight) and results are typed in the order the utterances were finalized. The overlay keeps the raw text until the formatted text is typed. On any failure (timeout, HTTP error, output that does not match the utterance) the raw text is typed instead. The startup log line shows `LLM: on` or `LLM: off`.
+
+```yaml
+llm:
+  enabled: true
+  base_url: https://api.z.ai/api/coding/paas/v4
+  model: glm-5.3-flash
+  timeout: 8            # seconds per request
+  concurrency: 4        # requests in flight
+  context_utterances: 2 # formatted utterances passed as context
+  # api_key: ...        # default: $ZAI_API_KEY, then the opencode auth store (zai-coding-plan)
+```
+
+The API key is read from `llm.api_key`, then from `ZAI_API_KEY`, then from the opencode auth store (the last one only for the default `base_url`, so that the stored key is never sent to another host). The default `base_url` is the z.ai coding-plan endpoint, which z.ai limits to supported tools; for a regular z.ai API key use `https://api.z.ai/api/paas/v4`.
 
 ## Usage
 

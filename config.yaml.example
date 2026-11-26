@@ -13,3 +13,13 @@ idle_timeout: 15                 # auto-deactivate after N seconds of silence
 overlay: true                    # show GTK3 overlay for partial results
 overlay_opacity: 0.85            # background opacity (0.0 - 1.0)
 overlay_font_size: 18            # text size in pixels
+
+# LLM formatting of finalized utterances before typing
+llm:
+  enabled: true                     # false to type the raw text
+  base_url: https://api.z.ai/api/coding/paas/v4
+  model: glm-5.3-flash
+  timeout: 8                        # seconds per request
+  concurrency: 4                    # requests in flight
+  context_utterances: 2             # formatted utterances passed as context
+  # api_key: ...                    # default: $ZAI_API_KEY, then the opencode auth store (zai-coding-plan)
