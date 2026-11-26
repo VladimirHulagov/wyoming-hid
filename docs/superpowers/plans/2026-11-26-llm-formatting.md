@@ -1798,7 +1798,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_entry.py tests/test_llm_formatter.py -q
 ```
-Expected: `tests/test_llm_formatter.py` fails to import (`ImportError: cannot import name 'build_formatter'`); in `tests/test_entry.py` `test_preserves_leading_space` fails (the command was called with `'мир'` instead of `' мир'`) and `test_final_goes_to_formatter` fails (`TypeError: run_streaming() got an unexpected keyword argument 'llm_cfg'`)
+Expected: `python3 -m pytest tests/test_entry.py tests/test_llm_formatter.py -q` stops at the collection error of `tests/test_llm_formatter.py` (`ImportError: cannot import name 'build_formatter'`); run `python3 -m pytest tests/test_entry.py -q` separately: `2 failed, 1 passed` (`test_preserves_leading_space`: the command was called with `'мир'` instead of `' мир'`; `test_final_goes_to_formatter`: `AttributeError: ... does not have the attribute 'build_formatter'`, because the entry module only gets that attribute in Step 3)
 
 - [ ] **Step 3: Implement**
 
