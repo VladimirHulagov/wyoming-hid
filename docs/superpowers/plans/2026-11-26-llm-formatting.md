@@ -1057,7 +1057,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.typed, ["Первый.", " Второй"])
         self.assertTrue(client.closed)
 
-    async def test_reset_clears_context_only(self):
+    async def test_reset_clears_context(self):
         client = FakeClient(["A.", "B.", "C."])
         formatter = OrderedFormatter(client, self.on_text, context_utterances=1)
         formatter.submit("a")
@@ -1069,7 +1069,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         await self.wait_typed(3)
         self.assertEqual(
             client.calls,
-            [("a", []), ("b", []), ("c", [" B."])],
+            [("a", []), ("b", []), ("c", ["B."])],
         )
 
     async def test_context_passed(self):
