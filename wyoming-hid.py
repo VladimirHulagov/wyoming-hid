@@ -101,7 +101,10 @@ class Typist:
         self.listening = False
 
     def on_partial(self, text: str):
-        self.live_partial = bool(text)
+        if text and not text.startswith("🎤"):
+            self.live_partial = True
+        elif not text:
+            self.live_partial = False
         if self.overlay:
             if text:
                 self.overlay.update(text)
@@ -118,12 +121,16 @@ class Typist:
             self(text)
 
     def on_state_change(self, old: State, new_state: State):
+        if new_state == State.DICTATING:
+            self.listening = True
+        elif new_state == State.IDLE:
+            self.listening = False
+            self.live_partial = False
         if self.overlay:
             if new_state == State.IDLE:
                 self.hide_if_idle()
             elif new_state == State.DICTATING:
                 self.overlay.show(self.LISTENING_MARK)
-        self.listening = new_state == State.DICTATING
         if self.formatter and new_state == State.DICTATING:
             self.formatter.reset()
 
