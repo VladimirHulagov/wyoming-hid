@@ -1831,6 +1831,16 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
             typing("Привет.")
         self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
 
+    async def test_empty_session_hides_listening_overlay(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.on_state_change(module.State.IDLE, module.State.DICTATING)
+        typing.on_partial("🎤 ...")
+        typing.on_state_change(module.State.DICTATING, module.State.IDLE)
+        self.assertEqual(overlay.calls, [("show", "🎤 ..."), ("hide",)])
+
     async def test_listening_session_keeps_overlay_on_old_result(self):
         module = load_entry_module()
         overlay = FakeOverlay()
@@ -2008,7 +2018,10 @@ class Typist:
         self.listening = False
 
     def on_partial(self, text: str):
-        self.live_partial = bool(text)
+        if text and not text.startswith("🎤"):
+            self.live_partial = True
+        elif not text:
+            self.live_partial = False
         if self.overlay:
             if text:
                 self.overlay.update(text)
@@ -2025,12 +2038,16 @@ class Typist:
             self(text)
 
     def on_state_change(self, old: State, new_state: State):
+        if new_state == State.DICTATING:
+            self.listening = True
+        elif new_state == State.IDLE:
+            self.listening = False
+            self.live_partial = False
         if self.overlay:
             if new_state == State.IDLE:
                 self.hide_if_idle()
             elif new_state == State.DICTATING:
                 self.overlay.show(self.LISTENING_MARK)
-        self.listening = new_state == State.DICTATING
         if self.formatter and new_state == State.DICTATING:
             self.formatter.reset()
 
@@ -2260,7 +2277,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `86 passed, 9 subtests passed`
+Expected: `87 passed, 9 subtests passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2478,7 +2495,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `86 passed, 9 subtests passed`
+Expected: `87 passed, 9 subtests passed`
 
 Run:
 ```bash
