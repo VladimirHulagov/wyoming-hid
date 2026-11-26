@@ -434,3 +434,33 @@ class OrderedFormatter:
             task.cancel()
             await self._emit(raw)
         await self.client.close()
+
+
+def build_formatter(
+    llm_cfg: Optional[dict], on_text: OnText
+) -> Optional[OrderedFormatter]:
+    if llm_cfg is None:
+        return None
+    if not llm_cfg.get("enabled", True):
+        return None
+    base_url = llm_cfg.get("base_url", DEFAULT_BASE_URL)
+    try:
+        api_key = resolve_api_key(
+            llm_cfg.get("api_key"), allow_auth_store=base_url == DEFAULT_BASE_URL
+        )
+    except LLMConfigError as e:
+        log.error("LLM formatting is off: %s", e)
+        return None
+    client = LLMClient(
+        base_url=base_url,
+        api_key=api_key,
+        model=llm_cfg.get("model", DEFAULT_MODEL),
+        timeout=float(llm_cfg.get("timeout", DEFAULT_TIMEOUT)),
+    )
+    return OrderedFormatter(
+        client,
+        on_text,
+        timeout=client.timeout,
+        concurrency=int(llm_cfg.get("concurrency", DEFAULT_CONCURRENCY)),
+        context_utterances=int(llm_cfg.get("context_utterances", DEFAULT_CONTEXT_UTTERANCES)),
+    )

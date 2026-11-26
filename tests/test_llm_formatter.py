@@ -16,6 +16,7 @@ from llm_formatter import (
     LLMError,
     OrderedFormatter,
     SYSTEM_PROMPT,
+    build_formatter,
     build_messages,
     ends_sentence,
     looks_faithful,
@@ -620,3 +621,45 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         await self.wait_typed(2)
         self.assertEqual(self.typed, ["Первый.", "второй"])
         self.assertEqual(len(client.calls), 1)
+
+
+class TestBuildFormatter(unittest.TestCase):
+    def setUp(self):
+        self.typed = []
+
+    def on_text(self, text):
+        self.typed.append(text)
+
+    def test_disabled_returns_none(self):
+        self.assertIsNone(build_formatter(None, self.on_text))
+        self.assertIsNone(build_formatter({"enabled": False}, self.on_text))
+
+    def test_defaults(self):
+        with patch("llm_formatter.resolve_api_key", return_value="k"):
+            formatter = build_formatter({}, self.on_text)
+        self.assertEqual(
+            (formatter.timeout, formatter.concurrency, formatter.context_size,
+             formatter.client.model, formatter.client.base_url),
+            (8.0, 4, 2, "glm-5.3-flash", "https://api.z.ai/api/coding/paas/v4"),
+        )
+
+    def test_overrides(self):
+        cfg = {
+            "base_url": "http://x/",
+            "model": "m",
+            "timeout": 3,
+            "concurrency": 2,
+            "context_utterances": 1,
+        }
+        with patch("llm_formatter.resolve_api_key", return_value="k"):
+            formatter = build_formatter(cfg, self.on_text)
+        self.assertEqual(
+            (formatter.timeout, formatter.concurrency, formatter.context_size,
+             formatter.client.model, formatter.client.base_url),
+            (3.0, 2, 1, "m", "http://x"),
+        )
+
+    def test_missing_key_returns_none(self):
+        with patch("llm_formatter.resolve_api_key", side_effect=LLMConfigError("no key")):
+            with self.assertLogs("wyoming-hid", level="ERROR"):
+                self.assertIsNone(build_formatter({}, self.on_text))
