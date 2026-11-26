@@ -50,12 +50,13 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   - a negation of `raw` is missing or an extra negation is added. Negations are the standalone tokens
     `не` and `ни` and tokens of 5 or more characters starting with `не`/`ни`: every standalone negation
     of `raw` must be present in `out`, and `out` must not contain more negations than `raw`;
-  - fewer than 90 % of the distinct content words of `raw` are matched to tokens of `out` (repeated
-    raw words count once, so a stutter such as "пошли пошли" may be merged by the model). A raw content
-    word matches an output token by exact match, by substring (both >= 3 chars) or by `SequenceMatcher`
-    ratio >= 0.6 (both >= 4 chars); each output token is used at most once; tokens containing digits
-    only match exactly; a negated token never matches a non-negated one (so `важно` does not match
-    `неважно`). ASR error corrections such as "попоавит" -> "поправит" pass;
+  - fewer than 90 % of the content words of `raw` are matched to tokens of `out`; a word repeated
+    directly after itself (a stutter such as "пошли пошли") is counted once, any other repetition
+    counts in full. A raw content word matches an output token by exact match, by substring
+    (both >= 3 chars) or by `SequenceMatcher` ratio >= 0.6 (both >= 4 chars); each output token is
+    used at most once; tokens containing digits only match exactly; a negated token never matches a
+    non-negated one (so `важно` does not match `неважно`). ASR error corrections such as
+    "попоавит" -> "поправит" pass;
   - more than `min(count // 7, 1)` long content tokens of `out` (>= 3 characters, not fillers) are
     explained by no content word of `raw`: a model preamble such as "Конечно! Вот отформатированный
     текст:" is rejected, while split glued words pass (at most one unexplained word is tolerated);

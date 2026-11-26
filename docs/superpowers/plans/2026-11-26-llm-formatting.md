@@ -156,6 +156,14 @@ class TestTextHelpers(unittest.TestCase):
     def test_faithful_stutter_removed(self):
         self.assertTrue(looks_faithful("мы пошли пошли в магазин", "Мы пошли в магазин."))
 
+    def test_unfaithful_dropped_non_adjacent_repeat(self):
+        self.assertFalse(
+            looks_faithful(
+                "включи камеру и выключи микрофон и включи запись",
+                "Включи камеру, выключи микрофон и запись.",
+            )
+        )
+
     def test_faithful_glued_words_with_short_pieces(self):
         self.assertTrue(looks_faithful("даяснял или не снял", "Да, я снял или не снял."))
 
@@ -284,15 +292,15 @@ def looks_faithful(raw: str, out: str) -> bool:
         1 for word in raw_words if _is_negation(word)
     ):
         return False
-    unique_words = list(dict.fromkeys(raw_words))
+    counted = [w for i, w in enumerate(raw_words) if i == 0 or w != raw_words[i - 1]]
     matched, used = 0, set()
-    for word in unique_words:
+    for word in counted:
         for index, token in enumerate(out_tokens):
             if index not in used and _match(word, token):
                 matched += 1
                 used.add(index)
                 break
-    if matched / len(unique_words) < FAITHFUL_RATIO:
+    if matched / len(counted) < FAITHFUL_RATIO:
         return False
     long_out = [t for t in out_tokens if len(t) >= MIN_TOKEN_LEN and t not in FILLERS]
     extra = [t for t in long_out if not any(_match(t, word) for word in raw_words)]
@@ -329,7 +337,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `29 passed`
+Expected: `30 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -413,13 +421,14 @@ SYSTEM_PROMPT = (
     "Ты — редактор голосового ввода. На входе — фраза, распознанная из речи: без пунктуации, "
     "со словами-паразитами и, возможно, со слитными словами. Оформи её в связный читаемый русский "
     "текст: поставь знаки препинания и заглавные буквы, раздели слитные слова, убери слова-паразиты "
-    "(ну, вот, а, да-да, угу, ага) и бессмысленные повторы соседних слов. Союзы, предлоги и ответы "
-    "«да»/«нет» сохраняй. Очевидные ошибки распознавания исправляй, остальное не переписывай. "
+    "(ну, вот, да-да, угу, ага; «а» — только если это не союз) и бессмысленные повторы соседних слов. "
+    "Союзы, предлоги и ответы «да»/«нет» сохраняй. Очевидные ошибки распознавания исправляй, "
+    "остальное не переписывай. "
     "Ничего не добавляй и не придумывай: все содержательные слова фразы должны остаться. Если фраза "
     "неразборчива — верни её без изменений. Если уже напечатанного текста нет или он заканчивается "
     "знаком конца предложения, начни с заглавной буквы; иначе — со строчной. Блок «Уже напечатанный "
     "текст» приведён только для ориентира: не повторяй его и не изменяй. Не рассуждай. Выводи только "
-    "готовый текст новой реплики, без пояснений, кавычек и разметки."
+    "готовый текст новой реплики в одну строку, без пояснений, кавычек и разметки."
 )
 
 
@@ -443,7 +452,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `32 passed`
+Expected: `33 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -577,7 +586,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `36 passed`
+Expected: `37 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -784,7 +793,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `41 passed`
+Expected: `42 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1169,7 +1178,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `50 passed`
+Expected: `51 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1886,7 +1895,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `59 passed`
+Expected: `60 passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2104,7 +2113,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `59 passed`
+Expected: `60 passed`
 
 Run:
 ```bash
