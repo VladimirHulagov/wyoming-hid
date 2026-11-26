@@ -635,6 +635,19 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.typed, ["Первый.", "Второй."])
         self.assertEqual(client.calls[1], ("второй", []))
 
+    async def test_separator_kept_for_pending_utterance_of_old_session(self):
+        gate = asyncio.Event()
+        client = FakeClient(["Первый.", "Второй."], gates=[None, gate])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        await self.wait_typed(1)
+        formatter.submit(" второй")
+        await asyncio.sleep(0.01)
+        formatter.reset()
+        gate.set()
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый.", " Второй."])
+
 
 class TestBuildFormatter(unittest.TestCase):
     def setUp(self):

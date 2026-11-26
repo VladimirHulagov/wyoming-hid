@@ -288,7 +288,7 @@ class OrderedFormatter:
         self._consumer: Optional[asyncio.Task] = None
         self._current: Optional[tuple[int, str, asyncio.Task]] = None
         self._typing: Optional[asyncio.Task] = None
-        self._tail: Optional[str] = None
+        self._tails: dict[int, Optional[str]] = {0: None}
         self._session_start = 0
         self._failures = 0
         self._disabled_until: Optional[float] = None
@@ -313,7 +313,7 @@ class OrderedFormatter:
 
     def reset(self) -> None:
         self._context.clear()
-        self._tail = None
+        self._tails[self._next_seq] = None
         self._session_start = self._next_seq
 
     def _in_cooldown(self) -> bool:
@@ -398,19 +398,16 @@ class OrderedFormatter:
                     log.exception("llm: seq=%d failed unexpectedly", seq)
                     formatted = None
                 self._current = None
-                await self._emit(
-                    formatted if formatted is not None else raw,
-                    track=seq >= self._session_start,
-                )
+                await self._emit(formatted if formatted is not None else raw, seq)
         finally:
             self._consumer = None
 
-    async def _emit(self, text: str, track: bool = True) -> None:
-        out = normalize(self._tail, text) if track else text
-        if track:
-            self._tail = out
-            if self._context.maxlen:
-                self._context.append(out)
+    async def _emit(self, text: str, seq: int) -> None:
+        start = max(s for s in self._tails if s <= seq)
+        out = normalize(self._tails[start], text)
+        self._tails[start] = out
+        if start == self._session_start and self._context.maxlen:
+            self._context.append(out)
         typing_task = asyncio.ensure_future(asyncio.to_thread(self._on_text, out))
         self._typing = typing_task
         try:
@@ -434,11 +431,11 @@ class OrderedFormatter:
             seq, raw, task = self._current
             self._current = None
             task.cancel()
-            await self._emit(raw, track=seq >= self._session_start)
+            await self._emit(raw, seq)
         for seq in sorted(self._pending):
             raw, task = self._pending.pop(seq)
             task.cancel()
-            await self._emit(raw, track=seq >= self._session_start)
+            await self._emit(raw, seq)
         await self.client.close()
 
 
