@@ -200,7 +200,7 @@ class LLMClient:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
-        self._session = None
+        self._session: Optional[aiohttp.ClientSession] = None
 
     def start(self) -> None:
         import aiohttp
@@ -235,6 +235,8 @@ class LLMClient:
                 payload = await resp.read()
         except asyncio.TimeoutError as e:
             raise LLMError(f"timeout after {self.timeout:.1f}s") from e
+        except LLMError:
+            raise
         except Exception as e:
             raise LLMError(str(e)) from e
         try:
