@@ -278,7 +278,7 @@ class OrderedFormatter:
         self.concurrency = concurrency
         self.context_size = context_utterances
         self._on_text = on_text
-        self._sem = asyncio.Semaphore(concurrency)
+        self._sem = asyncio.Semaphore(max(1, concurrency))
         self._context: deque[str] = deque(maxlen=max(0, context_utterances))
         self._cooldown_after = cooldown_after
         self._cooldown_seconds = cooldown_seconds
@@ -291,12 +291,17 @@ class OrderedFormatter:
         self._tail: Optional[str] = None
         self._failures = 0
         self._disabled_until: Optional[float] = None
+        self._closed = False
 
     @property
     def pending_count(self) -> int:
         return len(self._pending) + (1 if self._current is not None else 0)
 
     def submit(self, raw: str) -> int:
+        if self._closed:
+            log.warning("llm: formatter is closed, typing raw: %r", raw)
+            asyncio.get_running_loop().create_task(asyncio.to_thread(self._on_text, raw))
+            return -1
         self.client.start()
         seq = self._next_seq
         self._next_seq += 1
@@ -307,10 +312,17 @@ class OrderedFormatter:
 
     def reset(self) -> None:
         self._context.clear()
+        self._tail = None
 
     def _in_cooldown(self) -> bool:
         until = self._disabled_until
-        return until is not None and self._clock() < until
+        if until is None:
+            return False
+        if self._clock() >= until:
+            self._disabled_until = None
+            self._failures = 0
+            return False
+        return True
 
     async def _process(self, seq: int, raw: str) -> Optional[str]:
         t_submit = self._clock()
@@ -318,13 +330,16 @@ class OrderedFormatter:
             log.info("llm: seq=%d skipped (cooldown), typing raw", seq)
             return None
         async with self._sem:
+            if self._in_cooldown():
+                log.info("llm: seq=%d skipped (cooldown), typing raw", seq)
+                return None
             waited = self._clock() - t_submit
             t_start = self._clock()
             try:
                 text = await asyncio.wait_for(
                     self.client.format(raw, list(self._context)), self.timeout
                 )
-            except asyncio.TimeoutError as e:
+            except asyncio.TimeoutError:
                 self._register_failure(seq, f"timeout after {self.timeout:.1f}s")
                 return None
             except LLMError as e:
@@ -344,7 +359,7 @@ class OrderedFormatter:
             log.exception("llm: seq=%d validation failed", seq)
             faithful = False
         if not faithful:
-            log.info(
+            log.warning(
                 "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs rejected, typing raw",
                 seq, waited, api, total,
             )
@@ -401,6 +416,7 @@ class OrderedFormatter:
                 self._typing = None
 
     async def close(self) -> None:
+        self._closed = True
         consumer, self._consumer = self._consumer, None
         if consumer is not None:
             consumer.cancel()
@@ -408,13 +424,13 @@ class OrderedFormatter:
         typing_task, self._typing = self._typing, None
         if typing_task is not None:
             await asyncio.gather(typing_task, return_exceptions=True)
-        for seq in sorted(self._pending):
-            raw, task = self._pending.pop(seq)
-            task.cancel()
-            await self._emit(raw)
         if self._current is not None:
             seq, raw, task = self._current
             self._current = None
+            task.cancel()
+            await self._emit(raw)
+        for seq in sorted(self._pending):
+            raw, task = self._pending.pop(seq)
             task.cancel()
             await self._emit(raw)
         await self.client.close()

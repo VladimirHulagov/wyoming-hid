@@ -490,7 +490,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.typed, ["Первый.", " Второй"])
         self.assertTrue(client.closed)
 
-    async def test_reset_clears_context_only(self):
+    async def test_reset_clears_context(self):
         client = FakeClient(["A.", "B.", "C."])
         formatter = OrderedFormatter(client, self.on_text, context_utterances=1)
         formatter.submit("a")
@@ -502,7 +502,7 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         await self.wait_typed(3)
         self.assertEqual(
             client.calls,
-            [("a", []), ("b", []), ("c", [" B."])],
+            [("a", []), ("b", []), ("c", ["B."])],
         )
 
     async def test_context_passed(self):
@@ -550,3 +550,73 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         await self.wait_typed(5)
         self.assertEqual(len(client.calls), 4)
         self.assertEqual(self.typed[4], " Пять.")
+
+    async def test_close_types_current_before_pending(self):
+        gate = asyncio.Event()
+        client = FakeClient(["x", "x", "x"], gates=[gate, gate, gate])
+        formatter = OrderedFormatter(client, self.on_text)
+        for raw in ("один", "два", "три"):
+            formatter.submit(raw)
+        while not client.calls:
+            await asyncio.sleep(0)
+        await formatter.close()
+        self.assertEqual(self.typed, ["один", " два", " три"])
+
+    async def test_process_exception_types_raw(self):
+        client = FakeClient([RuntimeError("bug"), "Мир."])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("привет")
+        formatter.submit("мир")
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["привет", " Мир."])
+
+    async def test_cooldown_ignores_rejections(self):
+        client = FakeClient(["Несвязанный текст совсем"] * 4)
+        formatter = OrderedFormatter(client, self.on_text)
+        for raw in ("первый", "второй", "третий", "четвертый"):
+            formatter.submit(raw)
+        await self.wait_typed(4)
+        self.assertEqual(len(client.calls), 4)
+        self.assertEqual(self.typed, ["первый", " второй", " третий", " четвертый"])
+
+    async def test_reset_clears_tail(self):
+        client = FakeClient(["Первый", "Второй"])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        await self.wait_typed(1)
+        formatter.reset()
+        formatter.submit("второй")
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый", "Второй"])
+
+    async def test_on_text_error_is_logged_and_continues(self):
+        typed = []
+        state = {"fail": True}
+
+        def on_text(text):
+            typed.append(text)
+            if state["fail"]:
+                state["fail"] = False
+                raise RuntimeError("typing failed")
+
+        client = FakeClient(["Первый.", "Второй."])
+        formatter = OrderedFormatter(client, on_text)
+        formatter.submit("первый")
+        formatter.submit("второй")
+        for _ in range(300):
+            if len(typed) >= 2:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(typed, ["Первый.", " Второй."])
+
+    async def test_submit_after_close_types_raw(self):
+        client = FakeClient(["Первый."])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        await self.wait_typed(1)
+        await formatter.close()
+        self.assertTrue(client.closed)
+        formatter.submit("второй")
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый.", "второй"])
+        self.assertEqual(len(client.calls), 1)
