@@ -646,8 +646,10 @@ git commit -m "feat: resolve z.ai API key from config, env or opencode auth stor
 
 Replace the import block at the top of `tests/test_llm_formatter.py` with:
 ```python
+import asyncio
 import json
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -677,6 +679,8 @@ async def make_server(state):
 
     async def handler(request):
         calls.append((await request.json(), request.headers.get("Authorization")))
+        if state.get("delay"):
+            await asyncio.sleep(state["delay"])
         return web.Response(status=state["status"], text=state["body"])
 
     app = web.Application()
@@ -694,7 +698,7 @@ def ok_body(content, finish_reason="stop"):
 
 class TestLLMClient(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.state = {"status": 200, "body": ok_body("Привет.")}
+        self.state = {"status": 200, "body": ok_body("Привет."), "delay": 0}
         self.server, self.calls = await make_server(self.state)
         self.client = LLMClient(str(self.server.make_url("")), "secret", "m")
         self.client.start()
@@ -722,18 +726,71 @@ class TestLLMClient(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_content(self):
         self.state["body"] = ok_body("   ")
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "empty content")
 
     async def test_truncated(self):
         self.state["body"] = ok_body("Обрез", finish_reason="length")
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertIn("finish_reason", str(ctx.exception))
 
     async def test_malformed(self):
         self.state["body"] = "not json"
-        with self.assertRaises(LLMError):
+        with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
+        self.assertIn("malformed JSON", str(ctx.exception))
+
+    async def test_content_is_not_a_string(self):
+        self.state["body"] = json.dumps(
+            {"choices": [{"message": {"content": [{"type": "text", "text": "Привет."}]},
+                          "finish_reason": "stop"}]}
+        )
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertIn("unexpected response", str(ctx.exception))
+
+    async def test_null_choice(self):
+        self.state["body"] = json.dumps({"choices": [None]})
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertIn("unexpected response", str(ctx.exception))
+
+    async def test_timeout(self):
+        self.state["delay"] = 1.0
+        client = LLMClient(str(self.server.make_url("")), "secret", "m", timeout=0.1)
+        client.start()
+        try:
+            with self.assertRaises(LLMError) as ctx:
+                await client.format("привет", [])
+        finally:
+            await client.close()
+        self.assertEqual(str(ctx.exception), "timeout after 0.1s")
+
+    async def test_connection_refused(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        client = LLMClient(f"http://127.0.0.1:{port}", "secret", "m")
+        client.start()
+        try:
+            with self.assertRaises(LLMError):
+                await client.format("привет", [])
+        finally:
+            await client.close()
+
+    async def test_not_started(self):
+        client = LLMClient(str(self.server.make_url("")), "secret", "m")
+        with self.assertRaises(LLMError) as ctx:
+            await client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "client is not started")
+
+    async def test_closed(self):
+        await self.client.close()
+        with self.assertRaises(LLMError) as ctx:
+            await self.client.format("привет", [])
+        self.assertEqual(str(ctx.exception), "client is not started")
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -807,24 +864,37 @@ class LLMClient:
         try:
             async with self._session.post(self.base_url + "/chat/completions", json=body) as resp:
                 if resp.status != 200:
-                    raise LLMError(f"HTTP {resp.status}: {(await resp.text())[:200]}")
-                data = await resp.json(content_type=None)
-        except json.JSONDecodeError as e:
-            raise LLMError(f"malformed JSON in response: {e}") from e
-        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    raise LLMError(
+                        f"HTTP {resp.status}: {(await resp.text(errors='replace'))[:200]}"
+                    )
+                payload = await resp.read()
+        except asyncio.TimeoutError as e:
+            raise LLMError(f"timeout after {self.timeout:.1f}s") from e
+        except aiohttp.ClientError as e:
             raise LLMError(str(e)) from e
+        try:
+            data = json.loads(payload)
+        except ValueError as e:
+            raise LLMError(f"malformed JSON in response: {e}") from e
         return _extract_content(data)
 
 
-def _extract_content(data: dict) -> str:
-    try:
-        choice = data["choices"][0]
-        if choice.get("finish_reason") == "length":
-            raise LLMError("output truncated (finish_reason=length)")
-        content = choice["message"]["content"]
-    except (KeyError, IndexError, TypeError) as e:
-        raise LLMError(f"unexpected response: {str(data)[:200]}") from e
-    if not content or not content.strip():
+def _extract_content(data: object) -> str:
+    summary = str(data)[:200]
+    if not isinstance(data, dict):
+        raise LLMError(f"unexpected response: {summary}")
+    choices = data.get("choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, dict):
+        raise LLMError(f"unexpected response: {summary}")
+    finish_reason = choice.get("finish_reason")
+    if finish_reason not in (None, "stop"):
+        raise LLMError(f"unexpected finish_reason: {finish_reason}")
+    message = choice.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str):
+        raise LLMError(f"unexpected response: {summary}")
+    if not content.strip():
         raise LLMError("empty content")
     return content.strip()
 ```
@@ -835,7 +905,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `47 passed`
+Expected: `53 passed` (pytest 9 appends `, 5 subtests passed`; both forms are acceptable)
 
 - [ ] **Step 5: Commit**
 
@@ -859,6 +929,7 @@ Replace the import block at the top of `tests/test_llm_formatter.py` with:
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -1220,7 +1291,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `56 passed`
+Expected: `62 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1425,6 +1496,7 @@ Replace the import block at the top of `tests/test_llm_formatter.py` with:
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import unittest
 from pathlib import Path
@@ -1940,7 +2012,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `65 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
+Expected: `71 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2152,13 +2224,15 @@ python3 scripts/llm_smoke.py
 ```
 Expected: eighteen `typed:` lines, nine from the parallel pass (submitted 0.4 s apart, each line appears roughly 2-3 s after its submission) and nine from the sequential pass (each line appears roughly 2-3 s after the previous one); the last line is `formatted=9 unchanged=0 raw=0` (a single `raw=1` or `unchanged=1` is acceptable); exit code 0. The typed text itself depends on the model.
 
+If the log shows `llm: API key source: env` followed by `HTTP 401` failures, the `ZAI_API_KEY` of the current environment is stale (this is the case on the development laptop: the key exported in `~/.bashrc` is rejected by z.ai, while the key in the opencode auth store works). In that case run `env -u ZAI_API_KEY python3 scripts/llm_smoke.py`, and report both outputs.
+
 - [ ] **Step 3: Final verification**
 
 Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `65 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
+Expected: `71 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
 
 Run:
 ```bash

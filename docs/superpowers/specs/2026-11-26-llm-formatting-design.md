@@ -67,7 +67,11 @@ Measured on this laptop (3 utterances, ~100 output tokens): TTFT 1.1-1.4 s, tota
   - `start()`, `close()`, `async format(raw, context) -> str`;
   - non-streaming POST to `{base_url}/chat/completions`, `temperature 0.2`, `max_tokens 512`,
     `thinking: {"type": "disabled"}`;
-  - raises `LLMError` on non-200 status, malformed JSON, empty content or `finish_reason == "length"`.
+  - raises `LLMError` on non-200 status, timeouts (`timeout after Ns`), transport errors, a body that
+    is not valid UTF-8 JSON, an unexpected response shape (not an object, missing or `None` choice,
+    content that is not a string), a `finish_reason` other than `stop`, and empty content;
+  - `thinking: {"type": "disabled"}` is verified against the real endpoint: with it the model
+    answers directly in 1.8-2.0 s, without it the model reasons until `max_tokens` is exhausted.
 - `resolve_api_key(explicit, allow_auth_store=True) -> str` - `explicit` from config, then `ZAI_API_KEY`,
   then the `key` of the `zai-coding-plan` entry of `~/.local/share/opencode/auth.json` (only when
   `allow_auth_store` is true, i.e. when the base URL is the default z.ai URL, so that the stored key is
