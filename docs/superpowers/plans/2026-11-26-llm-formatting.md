@@ -543,8 +543,8 @@ class TestResolveApiKey(unittest.TestCase):
         if os.geteuid() == 0:
             self.skipTest("root ignores file permissions")
         self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
-        self.store.chmod(0)
-        self.addCleanup(self.store.chmod, 0o600)
+        self.addCleanup(Path(self.tmp.name).chmod, 0o700)
+        Path(self.tmp.name).chmod(0)
         with patch.dict(os.environ, {}, clear=True), self.assertLogs("wyoming-hid", level="WARNING") as logs:
             with self.assertRaises(LLMConfigError):
                 resolve_api_key()
@@ -625,7 +625,7 @@ Run:
 ```bash
 python3 -m pytest tests/test_llm_formatter.py -q
 ```
-Expected: `42 passed`
+Expected: `42 passed` (pytest 9 appends `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`; both forms are acceptable)
 
 - [ ] **Step 5: Commit**
 
@@ -1938,7 +1938,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `65 passed`
+Expected: `65 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2156,7 +2156,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `65 passed`
+Expected: `65 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
 
 Run:
 ```bash
