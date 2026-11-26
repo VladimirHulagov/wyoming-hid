@@ -14,6 +14,7 @@ from llm_formatter import (
     LLMClient,
     LLMConfigError,
     LLMError,
+    OrderedFormatter,
     SYSTEM_PROMPT,
     build_messages,
     ends_sentence,
@@ -385,3 +386,167 @@ class TestLLMClient(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LLMError) as ctx:
             await self.client.format("привет", [])
         self.assertEqual(str(ctx.exception), "client is not started")
+
+
+class FakeClient:
+    def __init__(self, results, gates=None):
+        self.calls = []
+        self._results = list(results)
+        self._gates = list(gates) if gates is not None else [None] * len(results)
+        self.closed = False
+
+    def start(self):
+        pass
+
+    async def format(self, raw, context):
+        self.calls.append((raw, list(context)))
+        index = len(self.calls) - 1
+        gate = self._gates[index]
+        if gate is not None:
+            await gate.wait()
+        result = self._results[index]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    async def close(self):
+        self.closed = True
+
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.typed = []
+
+    def on_text(self, text):
+        self.typed.append(text)
+
+    async def wait_typed(self, count):
+        for _ in range(300):
+            if len(self.typed) >= count:
+                return
+            await asyncio.sleep(0.01)
+        self.fail(f"only {len(self.typed)} of {count} texts typed")
+
+    async def test_emits_in_order(self):
+        gate_a = asyncio.Event()
+        gate_b = asyncio.Event()
+        client = FakeClient(["Первый.", "Второй."], gates=[gate_a, gate_b])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        formatter.submit("второй")
+        await asyncio.sleep(0.01)
+        self.assertEqual(self.typed, [])
+        gate_b.set()
+        await asyncio.sleep(0.01)
+        self.assertEqual(self.typed, [])
+        gate_a.set()
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["Первый.", " Второй."])
+        await formatter.close()
+        self.assertTrue(client.closed)
+
+    async def test_failure_types_raw(self):
+        client = FakeClient([LLMError("boom"), "Мир."])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("привет")
+        formatter.submit("мир")
+        await self.wait_typed(2)
+        self.assertEqual(self.typed, ["привет", " Мир."])
+        self.assertEqual(client.calls[0], ("привет", []))
+
+    async def test_timeout_types_raw(self):
+        gate = asyncio.Event()
+        client = FakeClient(["x"], gates=[gate])
+        formatter = OrderedFormatter(client, self.on_text, timeout=0.05)
+        formatter.submit("первый")
+        await self.wait_typed(1)
+        self.assertEqual(self.typed, ["первый"])
+        await formatter.close()
+
+    async def test_rejected_output_types_raw(self):
+        client = FakeClient(["Как дела сегодня"])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("привет")
+        await self.wait_typed(1)
+        self.assertEqual(self.typed, ["привет"])
+
+    async def test_close_types_pending_raw(self):
+        gate = asyncio.Event()
+        client = FakeClient(["Первый.", "x"], gates=[None, gate])
+        formatter = OrderedFormatter(client, self.on_text)
+        formatter.submit("первый")
+        formatter.submit("второй")
+        await self.wait_typed(1)
+        self.assertEqual(self.typed, ["Первый."])
+        await formatter.close()
+        self.assertEqual(self.typed, ["Первый.", " Второй"])
+        self.assertTrue(client.closed)
+
+    async def test_reset_clears_context_only(self):
+        client = FakeClient(["A.", "B.", "C."])
+        formatter = OrderedFormatter(client, self.on_text, context_utterances=1)
+        formatter.submit("a")
+        await self.wait_typed(1)
+        formatter.reset()
+        formatter.submit("b")
+        await self.wait_typed(2)
+        formatter.submit("c")
+        await self.wait_typed(3)
+        self.assertEqual(
+            client.calls,
+            [("a", []), ("b", []), ("c", [" B."])],
+        )
+
+    async def test_context_passed(self):
+        client = FakeClient(["A.", "B.", "C."])
+        formatter = OrderedFormatter(client, self.on_text, context_utterances=2)
+        formatter.submit("a")
+        await self.wait_typed(1)
+        formatter.submit("b")
+        await self.wait_typed(2)
+        formatter.submit("c")
+        await self.wait_typed(3)
+        self.assertEqual(client.calls[1], ("b", ["A."]))
+        self.assertEqual(client.calls[2], ("c", ["A.", " B."]))
+
+    async def test_concurrency_cap(self):
+        release = asyncio.Event()
+        client = FakeClient(["1", "2", "3"], gates=[release, release, release])
+        formatter = OrderedFormatter(client, self.on_text, concurrency=2)
+        for raw in ("a", "b", "c"):
+            formatter.submit(raw)
+        await asyncio.sleep(0.01)
+        self.assertEqual(len(client.calls), 2)
+        release.set()
+        await self.wait_typed(3)
+        self.assertEqual([call[0] for call in client.calls], ["a", "b", "c"])
+
+    async def test_cooldown(self):
+        clock = FakeClock()
+        client = FakeClient(
+            [LLMError("a"), LLMError("b"), LLMError("c"), "Пять."]
+        )
+        formatter = OrderedFormatter(
+            client, self.on_text, cooldown_after=3, cooldown_seconds=60.0, clock=clock
+        )
+        for raw in ("один", "два", "три"):
+            formatter.submit(raw)
+        await self.wait_typed(3)
+        self.assertEqual(len(client.calls), 3)
+        formatter.submit("четыре")
+        await self.wait_typed(4)
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(self.typed[3], " четыре")
+        clock.now += 61
+        formatter.submit("пять")
+        await self.wait_typed(5)
+        self.assertEqual(len(client.calls), 4)
+        self.assertEqual(self.typed[4], " Пять.")

@@ -9,7 +9,9 @@ import logging
 import os
 import re
 import string
+import time
 import unicodedata
+from collections import deque
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -257,3 +259,162 @@ def _extract_content(data: object) -> str:
     if not content.strip():
         raise LLMError("empty content")
     return content.strip()
+
+
+class OrderedFormatter:
+    def __init__(
+        self,
+        client: LLMClient,
+        on_text: OnText,
+        timeout: float = DEFAULT_TIMEOUT,
+        concurrency: int = DEFAULT_CONCURRENCY,
+        context_utterances: int = DEFAULT_CONTEXT_UTTERANCES,
+        cooldown_after: int = COOLDOWN_AFTER,
+        cooldown_seconds: float = COOLDOWN_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.client = client
+        self.timeout = timeout
+        self.concurrency = concurrency
+        self.context_size = context_utterances
+        self._on_text = on_text
+        self._sem = asyncio.Semaphore(concurrency)
+        self._context: deque[str] = deque(maxlen=max(0, context_utterances))
+        self._cooldown_after = cooldown_after
+        self._cooldown_seconds = cooldown_seconds
+        self._clock = clock
+        self._pending: dict[int, tuple[str, asyncio.Task]] = {}
+        self._next_seq = 0
+        self._consumer: Optional[asyncio.Task] = None
+        self._current: Optional[tuple[int, str, asyncio.Task]] = None
+        self._typing: Optional[asyncio.Task] = None
+        self._tail: Optional[str] = None
+        self._failures = 0
+        self._disabled_until: Optional[float] = None
+
+    @property
+    def pending_count(self) -> int:
+        return len(self._pending) + (1 if self._current is not None else 0)
+
+    def submit(self, raw: str) -> int:
+        self.client.start()
+        seq = self._next_seq
+        self._next_seq += 1
+        self._pending[seq] = (raw, asyncio.create_task(self._process(seq, raw)))
+        if self._consumer is None:
+            self._consumer = asyncio.create_task(self._run())
+        return seq
+
+    def reset(self) -> None:
+        self._context.clear()
+
+    def _in_cooldown(self) -> bool:
+        until = self._disabled_until
+        return until is not None and self._clock() < until
+
+    async def _process(self, seq: int, raw: str) -> Optional[str]:
+        t_submit = self._clock()
+        if self._in_cooldown():
+            log.info("llm: seq=%d skipped (cooldown), typing raw", seq)
+            return None
+        async with self._sem:
+            waited = self._clock() - t_submit
+            t_start = self._clock()
+            try:
+                text = await asyncio.wait_for(
+                    self.client.format(raw, list(self._context)), self.timeout
+                )
+            except asyncio.TimeoutError as e:
+                self._register_failure(seq, f"timeout after {self.timeout:.1f}s")
+                return None
+            except LLMError as e:
+                self._register_failure(seq, str(e))
+                return None
+            except Exception as e:
+                self._register_failure(seq, repr(e))
+                return None
+        api = self._clock() - t_start
+        total = self._clock() - t_submit
+        faithful = False
+        try:
+            text = text.strip() if isinstance(text, str) else ""
+            if text:
+                faithful = await asyncio.to_thread(looks_faithful, raw, text)
+        except Exception:
+            log.exception("llm: seq=%d validation failed", seq)
+            faithful = False
+        if not faithful:
+            log.info(
+                "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs rejected, typing raw",
+                seq, waited, api, total,
+            )
+            return None
+        self._failures = 0
+        log.info(
+            "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs formatted",
+            seq, waited, api, total,
+        )
+        return text
+
+    def _register_failure(self, seq: int, error: str) -> None:
+        self._failures += 1
+        log.warning("llm: seq=%d failed (%s), typing raw", seq, error)
+        if self._failures >= self._cooldown_after:
+            self._disabled_until = self._clock() + self._cooldown_seconds
+            self._failures = 0
+            log.warning(
+                "llm: %d failures in a row, formatting paused for %.0fs",
+                self._cooldown_after, self._cooldown_seconds,
+            )
+
+    async def _run(self) -> None:
+        try:
+            while self._pending:
+                seq = min(self._pending)
+                raw, task = self._pending.pop(seq)
+                self._current = (seq, raw, task)
+                try:
+                    formatted = await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("llm: seq=%d failed unexpectedly", seq)
+                    formatted = None
+                self._current = None
+                await self._emit(formatted if formatted is not None else raw)
+        finally:
+            self._consumer = None
+
+    async def _emit(self, text: str) -> None:
+        out = normalize(self._tail, text)
+        self._tail = out
+        if self._context.maxlen:
+            self._context.append(out)
+        typing_task = asyncio.ensure_future(asyncio.to_thread(self._on_text, out))
+        self._typing = typing_task
+        try:
+            await asyncio.shield(typing_task)
+        except Exception:
+            log.exception("llm: typing failed, text dropped: %r", out)
+        finally:
+            if typing_task.done():
+                self._typing = None
+
+    async def close(self) -> None:
+        consumer, self._consumer = self._consumer, None
+        if consumer is not None:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+        typing_task, self._typing = self._typing, None
+        if typing_task is not None:
+            await asyncio.gather(typing_task, return_exceptions=True)
+        for seq in sorted(self._pending):
+            raw, task = self._pending.pop(seq)
+            task.cancel()
+            await self._emit(raw)
+        if self._current is not None:
+            seq, raw, task = self._current
+            self._current = None
+            task.cancel()
+            await self._emit(raw)
+        await self.client.close()
