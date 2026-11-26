@@ -503,7 +503,8 @@ class TestResolveApiKey(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_explicit_wins(self):
-        self.assertEqual(resolve_api_key("explicit"), "explicit")
+        with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
+            self.assertEqual(resolve_api_key("explicit"), "explicit")
 
     def test_env(self):
         with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
@@ -539,6 +540,7 @@ import logging
 import os
 import re
 import string
+import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional, Sequence
@@ -717,6 +719,7 @@ import logging
 import os
 import re
 import string
+import unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional, Sequence
