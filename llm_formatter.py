@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
 import string
 import unicodedata
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Optional, Sequence
 
 DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
@@ -28,7 +32,11 @@ MAX_OUTPUT_FACTOR = 2.5
 MAX_OUTPUT_EXTRA = 20
 SENTENCE_FINAL = ".!?…"
 CLOSERS = "\"'»)]}❞“”„"
+AUTH_STORE_PATH = Path("~/.local/share/opencode/auth.json").expanduser()
+AUTH_STORE_PROVIDER = "zai-coding-plan"
 LEAD_PUNCT = frozenset(string.punctuation)
+
+log = logging.getLogger("wyoming-hid")
 
 _TOKEN_RE = re.compile(r"[а-яёa-z0-9]+", re.IGNORECASE)
 
@@ -145,3 +153,26 @@ def build_messages(raw: str, context: Sequence[str]) -> list[dict]:
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": "\n".join(lines)},
     ]
+
+
+class LLMConfigError(Exception):
+    pass
+
+
+def resolve_api_key(explicit: Optional[str] = None) -> str:
+    if explicit:
+        return explicit
+    env_key = os.environ.get("ZAI_API_KEY")
+    if env_key:
+        return env_key
+    if AUTH_STORE_PATH.is_file():
+        try:
+            data = json.loads(AUTH_STORE_PATH.read_text())
+            key = data.get(AUTH_STORE_PROVIDER, {}).get("key", "")
+            if key:
+                return key
+        except (OSError, ValueError):
+            log.warning("Could not read %s", AUTH_STORE_PATH)
+    raise LLMConfigError(
+        "No API key: set llm.api_key in config.yaml, export ZAI_API_KEY or log in to opencode"
+    )

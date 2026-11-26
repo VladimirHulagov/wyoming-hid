@@ -1,11 +1,18 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from llm_formatter import (
+    LLMConfigError,
     SYSTEM_PROMPT,
     build_messages,
     ends_sentence,
     looks_faithful,
     normalize,
+    resolve_api_key,
     separator,
 )
 
@@ -190,3 +197,29 @@ class TestBuildMessages(unittest.TestCase):
             messages[1]["content"],
             "Уже напечатанный текст:\nМы пошли и увидели\nморе\n\nНовая реплика без пунктуации:\nрека",
         )
+
+
+class TestResolveApiKey(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Path(self.tmp.name) / "auth.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_explicit_wins(self):
+        self.assertEqual(resolve_api_key("explicit"), "explicit")
+
+    def test_env(self):
+        with patch.dict(os.environ, {"ZAI_API_KEY": "env"}):
+            self.assertEqual(resolve_api_key(), "env")
+
+    def test_auth_store(self):
+        self.store.write_text(json.dumps({"zai-coding-plan": {"key": "file"}}))
+        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+            self.assertEqual(resolve_api_key(), "file")
+
+    def test_no_key(self):
+        with patch.dict(os.environ, {}, clear=True), patch("llm_formatter.AUTH_STORE_PATH", self.store):
+            with self.assertRaises(LLMConfigError):
+                resolve_api_key()
