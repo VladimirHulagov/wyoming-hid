@@ -2414,29 +2414,30 @@ UTTERANCES = [
     "вот я все три и сделал ошибки ну ничего страшного я тебе еще принесу хо вот ы эти вот три сделай еще раз хорошо сейчас сделаю только те одну последнюю оставь последнюю вот да я тебе скажу какую",
     "угу",
 ]
+GARBAGE_INDEX = 0
 
 
-class ModeCounter(logging.Handler):
+class OutcomeTracker(logging.Handler):
     def __init__(self):
         super().__init__(level=logging.INFO)
-        self.formatted = 0
-        self.raw = 0
+        self.outcome = {}
         self.unchanged = 0
 
     def emit(self, record):
         message = record.getMessage()
         if not message.startswith("llm: seq="):
             return
-        if message.endswith(" formatted"):
-            self.formatted += 1
-        elif "typing raw" in message:
-            self.raw += 1
+        seq_text, rest = message.split(" ", 2)[1:]
+        if rest.startswith("formatted"):
+            self.outcome[int(seq_text[4:])] = "formatted"
+        elif "typing raw" in rest:
+            self.outcome[int(seq_text[4:])] = "raw"
 
 
 async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    counter = ModeCounter()
-    logging.getLogger("wyoming-hid").addHandler(counter)
+    tracker = OutcomeTracker()
+    logging.getLogger("wyoming-hid").addHandler(tracker)
 
     typed = []
     started = time.monotonic()
@@ -2445,10 +2446,9 @@ async def main():
 
     def on_text(text):
         if current["raw"] and text.strip() == current["raw"].strip():
-            counter.unchanged += 1
+            tracker.unchanged += 1
         typed.append(text)
-        elapsed = time.monotonic() - started
-        print(f"{elapsed:6.2f}s  typed: {text}", flush=True)
+        print(f"{time.monotonic() - started:6.2f}s  typed: {text}", flush=True)
         if len(typed) >= len(UTTERANCES):
             done.set()
 
@@ -2457,13 +2457,16 @@ async def main():
     if formatter is None:
         print("LLM formatting is disabled (check the llm section of config.yaml)")
         return 1
-    for raw in UTTERANCES:
-        formatter.submit(raw)
+
+    seqs = {}
+    for index, raw in enumerate(UTTERANCES):
+        seqs[formatter.submit(raw)] = index
         await asyncio.sleep(0.4)
     await asyncio.wait_for(done.wait(), timeout=120)
 
     started = time.monotonic()
     typed.clear()
+    done.clear()
     for raw in UTTERANCES:
         current["raw"] = raw
         before = len(typed)
@@ -2472,9 +2475,19 @@ async def main():
             await asyncio.sleep(0.05)
     current["raw"] = ""
     await formatter.close()
-    total = len(UTTERANCES) * 2
-    print(f"formatted={counter.formatted} unchanged={counter.unchanged} raw={counter.raw}")
-    return 0 if (counter.formatted + counter.unchanged) * 10 >= total * 9 else 1
+
+    clean = [i for i in range(len(UTTERANCES)) if i != GARBAGE_INDEX]
+    clean_total = len(clean) * 2
+    clean_formatted = sum(
+        1 for seq, index in seqs.items()
+        if index in clean and tracker.outcome.get(seq) == "formatted"
+    )
+    garbage = [tracker.outcome.get(seq) for seq, index in seqs.items() if index == GARBAGE_INDEX]
+    print(
+        f"clean formatted={clean_formatted}/{clean_total} "
+        f"unchanged={tracker.unchanged} garbage outcome={garbage}"
+    )
+    return 0 if clean_formatted * 10 >= clean_total * 9 else 1
 
 
 if __name__ == "__main__":
@@ -2483,13 +2496,11 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Run it**
 
-Run:
+Run (the environment of the development laptop exports a stale `ZAI_API_KEY`, which is why it is unset here; on a machine without that variable the plain command is fine):
 ```bash
-python3 scripts/llm_smoke.py
+env -u ZAI_API_KEY -u DISPLAY -u WAYLAND_DISPLAY python3 scripts/llm_smoke.py
 ```
-Expected: eighteen `typed:` lines, nine from the parallel pass (submitted 0.4 s apart, each line appears roughly 2-3 s after its submission) and nine from the sequential pass (each line appears roughly 2-3 s after the previous one); the last line is `formatted=9 unchanged=0 raw=0` (a single `raw=1` or `unchanged=1` is acceptable); exit code 0. The typed text itself depends on the model.
-
-If the log shows `llm: API key source: env` followed by `HTTP 401` failures, the `ZAI_API_KEY` of the current environment is stale (this is the case on the development laptop: the key exported in `~/.bashrc` is rejected by z.ai, while the key in the opencode auth store works). In that case run `env -u ZAI_API_KEY python3 scripts/llm_smoke.py`, and report both outputs.
+Expected: a line `llm: API key source: ...` in the log (never the key itself); eighteen `typed:` lines, nine from the parallel pass (submitted 0.4 s apart, each line appears roughly 2-3 s after its submission) and nine from the sequential pass (each line appears roughly 2-3 s after the previous one); the last line looks like `clean formatted=16/16 unchanged=0 garbage outcome=['raw', 'raw']` (the garbage utterance may also come back unchanged and count as `formatted`; `clean formatted` of 15 or 16 is acceptable, fewer is a failure); exit code 0. The typed text itself depends on the model. Report the last line and the exit code.
 
 - [ ] **Step 3: Final verification**
 
