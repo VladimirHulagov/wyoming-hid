@@ -2334,7 +2334,7 @@ Insert the following section between the closing fence of the configuration bloc
 ``````markdown
 ## LLM Formatting
 
-With an `llm` section in `config.yaml`, every finalized utterance is sent to GLM-5.3-Flash on z.ai before typing: punctuation, capitalization, glued words split and fillers removed. Requests run in parallel (up to `concurrency` in flight) and results are typed in the order the utterances were finalized. On any failure (timeout, HTTP error, unfaithful output) the raw text is typed instead.
+Formatting is opt-in: without an `llm` section in `config.yaml` the recognized text is typed as is. With the section, every finalized utterance is sent to GLM-5.3-Flash on z.ai before typing: punctuation, capitalization, glued words split and fillers removed. Requests run in parallel (up to `concurrency` in flight) and results are typed in the order the utterances were finalized. The overlay keeps the raw text until the formatted text is typed. On any failure (timeout, HTTP error, output that does not match the utterance) the raw text is typed instead. The startup log line shows `LLM: on` or `LLM: off`.
 
 ```yaml
 llm:
@@ -2346,6 +2346,8 @@ llm:
   context_utterances: 2 # formatted utterances passed as context
   # api_key: ...        # default: $ZAI_API_KEY, then the opencode auth store (zai-coding-plan)
 ```
+
+The API key is read from `llm.api_key`, then from `ZAI_API_KEY`, then from the opencode auth store (the last one only for the default `base_url`, so that the stored key is never sent to another host). The default `base_url` is the z.ai coding-plan endpoint, which z.ai limits to supported tools; for a regular z.ai API key use `https://api.z.ai/api/paas/v4`.
 ``````
 
 - [ ] **Step 3: Enable formatting in the local config**
