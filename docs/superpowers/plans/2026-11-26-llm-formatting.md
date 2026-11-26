@@ -1831,6 +1831,19 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
             typing("Привет.")
         self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
 
+    async def test_listening_session_keeps_overlay_on_old_result(self):
+        module = load_entry_module()
+        overlay = FakeOverlay()
+        typing = module.Typist("xdotool", overlay)
+        typing.formatter = FakeFormatter([])
+        typing.formatter.pending.append("старая фраза")
+        typing.on_state_change(module.State.IDLE, module.State.DICTATING)
+        self.assertEqual(overlay.calls, [("show", "🎤 ...")])
+        typing.formatter.pending.clear()
+        with patch.object(module.subprocess, "run"):
+            typing(" Старая фраза.")
+        self.assertEqual(overlay.calls, [("show", "🎤 ...")])
+
     async def test_shutdown_types_pending_and_closes_formatter(self):
         module = load_entry_module()
         original = signal.getsignal(signal.SIGINT)
@@ -1985,11 +1998,14 @@ In `wyoming-hid.py` replace everything from the line `async def run_streaming(` 
 
 ```python
 class Typist:
+    LISTENING_MARK = "🎤 ..."
+
     def __init__(self, method: str, overlay):
         self.method = method
         self.overlay = overlay
         self.formatter = None
         self.live_partial = False
+        self.listening = False
 
     def on_partial(self, text: str):
         self.live_partial = bool(text)
@@ -2002,6 +2018,7 @@ class Typist:
 
     def on_final(self, text: str):
         self.live_partial = False
+        self.listening = False
         if self.formatter:
             self.formatter.submit(text)
         else:
@@ -2012,13 +2029,15 @@ class Typist:
             if new_state == State.IDLE:
                 self.hide_if_idle()
             elif new_state == State.DICTATING:
-                self.overlay.show("🎤 ...")
+                self.overlay.show(self.LISTENING_MARK)
+        self.listening = new_state == State.DICTATING
         if self.formatter and new_state == State.DICTATING:
             self.formatter.reset()
 
     def hide_if_idle(self):
         if (
             self.overlay
+            and not self.listening
             and not self.live_partial
             and (self.formatter is None or self.formatter.pending_count == 0)
         ):
@@ -2241,7 +2260,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `85 passed, 9 subtests passed`
+Expected: `86 passed, 9 subtests passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2459,7 +2478,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `85 passed, 9 subtests passed`
+Expected: `86 passed, 9 subtests passed`
 
 Run:
 ```bash
