@@ -1680,7 +1680,7 @@ class TestBuildFormatter(unittest.TestCase):
                 self.assertIsNone(build_formatter({}, self.on_text))
 
     def test_malformed_values_return_none(self):
-        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"base_url": None}):
+        for cfg in ({"timeout": "abc"}, {"timeout": None}, {"concurrency": "two"}, {"context_utterances": "many"}):
             with self.subTest(cfg=cfg), patch("llm_formatter.resolve_api_key", return_value="k"), self.assertLogs("wyoming-hid", level="ERROR"):
                 self.assertIsNone(build_formatter(cfg, self.on_text))
 ```
@@ -1773,6 +1773,7 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
             typing.on_final("привет")
             self.assertEqual(overlay.calls, [("update", "привет"), ("show", "привет")])
             self.assertEqual(events, [("submit", "привет")])
+            typing.formatter.pending.clear()
             typing("Привет.")
         run.assert_called_once_with(
             ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
@@ -1797,7 +1798,14 @@ class TestTypist(unittest.IsolatedAsyncioTestCase):
         typing.formatter.pending.append("привет")
         typing.on_state_change(module.State.DICTATING, module.State.IDLE)
         self.assertEqual(overlay.calls, [])
-        typing("Привет.")
+        typing.formatter.pending.clear()
+        with patch.object(module.subprocess, "run") as run:
+            typing("Привет.")
+        run.assert_called_once_with(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "Привет."],
+            check=True,
+            timeout=10,
+        )
         self.assertEqual(overlay.calls, [("hide",)])
 
     async def test_raw_path_types_and_hides(self):
@@ -2233,7 +2241,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `85 passed` (pytest 9 appends `, 5 subtests passed`)
+Expected: `85 passed, 9 subtests passed`
 
 - [ ] **Step 5: Check that the module still starts**
 
@@ -2451,7 +2459,7 @@ Run:
 ```bash
 python3 -m pytest tests -q
 ```
-Expected: `85 passed` (pytest 9 may append `, 5 subtests passed` because of the subtests in `test_malformed_store_raises`)
+Expected: `85 passed, 9 subtests passed`
 
 Run:
 ```bash
