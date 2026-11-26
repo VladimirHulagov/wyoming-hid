@@ -1649,7 +1649,7 @@ class TestBuildFormatter(unittest.TestCase):
         self.assertEqual(
             (formatter.timeout, formatter.concurrency, formatter.context_size,
              formatter.client.model, formatter.client.base_url),
-            (3.0, 2, 1, "m", "http://x/"),
+            (3.0, 2, 1, "m", "http://x"),
         )
 
     def test_missing_key_returns_none(self):
@@ -1666,6 +1666,7 @@ import signal
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1742,8 +1743,6 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                 pass
 
         class FakePyAudio:
-            paInt16 = 8
-
             def open(self, **kwargs):
                 return FakeStream()
 
@@ -1770,8 +1769,10 @@ class TestRunStreamingWiring(unittest.IsolatedAsyncioTestCase):
                     raise KeyboardInterrupt
                 return FakeWSContext(object())
 
+        fake_pyaudio = SimpleNamespace(PyAudio=FakePyAudio, paInt16=8)
+
         try:
-            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", FakePyAudio), patch.object(module.websockets, "connect", FakeConnect()), patch.object(module, "build_formatter", lambda cfg, on_text: FakeFormatter()):
+            with patch.object(module, "StreamingSTT", FakeStreamingSTT), patch.object(module, "pyaudio", fake_pyaudio), patch.object(module.websockets, "connect", FakeConnect()), patch.object(module, "build_formatter", lambda cfg, on_text: FakeFormatter()):
                 task = asyncio.ensure_future(module.run_streaming(
                     "ws://x/stt", "", "xdotool", wake_phrase="w", stop_phrase="s",
                     idle_timeout=15, use_overlay=False, overlay_opacity=0.85,
