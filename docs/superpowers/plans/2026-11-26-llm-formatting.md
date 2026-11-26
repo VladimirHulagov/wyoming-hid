@@ -1021,12 +1021,12 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(client.closed)
 
     async def test_failure_types_raw(self):
-        client = FakeClient([LLMError("boom"), "Ok."])
+        client = FakeClient([LLMError("boom"), "Мир."])
         formatter = OrderedFormatter(client, self.on_text)
         formatter.submit("привет")
         formatter.submit("мир")
         await self.wait_typed(2)
-        self.assertEqual(self.typed, ["привет", " Ok."])
+        self.assertEqual(self.typed, ["привет", " Мир."])
         self.assertEqual(client.calls[0], ("привет", []))
 
     async def test_timeout_types_raw(self):
@@ -1049,12 +1049,12 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
         gate = asyncio.Event()
         client = FakeClient(["Первый.", "x"], gates=[None, gate])
         formatter = OrderedFormatter(client, self.on_text)
-        formatter.submit("a")
-        formatter.submit("b")
+        formatter.submit("первый")
+        formatter.submit("второй")
         await self.wait_typed(1)
         self.assertEqual(self.typed, ["Первый."])
         await formatter.close()
-        self.assertEqual(self.typed, ["Первый.", " b"])
+        self.assertEqual(self.typed, ["Первый.", " второй"])
         self.assertTrue(client.closed)
 
     async def test_reset_clears_context_only(self):
@@ -1099,24 +1099,24 @@ class TestOrderedFormatter(unittest.IsolatedAsyncioTestCase):
     async def test_cooldown(self):
         clock = FakeClock()
         client = FakeClient(
-            [LLMError("a"), LLMError("b"), LLMError("c"), "Never.", "After."]
+            [LLMError("a"), LLMError("b"), LLMError("c"), "Never.", "Пять."]
         )
         formatter = OrderedFormatter(
             client, self.on_text, cooldown_after=3, cooldown_seconds=60.0, clock=clock
         )
-        for raw in ("1", "2", "3"):
+        for raw in ("один", "два", "три"):
             formatter.submit(raw)
         await self.wait_typed(3)
         self.assertEqual(len(client.calls), 3)
-        formatter.submit("4")
+        formatter.submit("четыре")
         await self.wait_typed(4)
         self.assertEqual(len(client.calls), 3)
-        self.assertEqual(self.typed[3], " 4")
+        self.assertEqual(self.typed[3], " четыре")
         clock.now += 61
-        formatter.submit("5")
+        formatter.submit("пять")
         await self.wait_typed(5)
         self.assertEqual(len(client.calls), 4)
-        self.assertEqual(self.typed[4], " After.")
+        self.assertEqual(self.typed[4], " Пять.")
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1129,7 +1129,7 @@ Expected: `ImportError: cannot import name 'OrderedFormatter'`
 
 - [ ] **Step 3: Implement**
 
-In `llm_formatter.py` add `import time` after `import string` and `from collections import deque` after `import time`.
+In `llm_formatter.py` add `import time` after `import string` and `from collections import deque` directly before `from difflib import SequenceMatcher`.
 
 Append to `llm_formatter.py`:
 ```python
@@ -1207,13 +1207,14 @@ class OrderedFormatter:
                 return None
         api = self._clock() - t_start
         total = self._clock() - t_submit
-        text = text.strip()
         faithful = False
-        if text:
-            try:
+        try:
+            text = text.strip() if isinstance(text, str) else ""
+            if text:
                 faithful = await asyncio.to_thread(looks_faithful, raw, text)
-            except Exception:
-                log.exception("llm: seq=%d validation failed", seq)
+        except Exception:
+            log.exception("llm: seq=%d validation failed", seq)
+            faithful = False
         if not faithful:
             log.info(
                 "llm: seq=%d wait=%.2fs api=%.2fs total=%.2fs rejected, typing raw",
@@ -1244,7 +1245,13 @@ class OrderedFormatter:
                 seq = min(self._pending)
                 raw, task = self._pending.pop(seq)
                 self._current = (seq, raw, task)
-                formatted = await task
+                try:
+                    formatted = await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("llm: seq=%d failed unexpectedly", seq)
+                    formatted = None
                 self._current = None
                 await self._emit(formatted if formatted is not None else raw)
         finally:
